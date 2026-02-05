@@ -9,7 +9,7 @@ const viewport = ref<HTMLDivElement>();
 const surfaceWidth = ref(980);
 const surfaceHeight = ref(760);
 
-let renderContext: any = null;
+let renderContext: { canvas: any; wavePoints: WavePoint[] } | null = null;
 let activeKeystone: string | null = null;
 
 interface WavePoint {

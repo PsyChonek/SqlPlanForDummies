@@ -13,7 +13,7 @@ export interface Capsule {
 const centralState = reactive({
   rootCapsule: null as Capsule | null,
   inspectedCapsule: null as Capsule | null,
-  revision: 0
+  revision: 0  // Incremented to trigger Vue reactivity when state changes
 });
 
 export const usePlanState = () => {
