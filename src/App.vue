@@ -1,153 +1,103 @@
 <script setup lang="ts">
-import WaveformRenderer from './components/WaveformRenderer.vue';
-import DiagnosticConsole from './components/DiagnosticConsole.vue';
-import ArtifactTerminal from './components/ArtifactTerminal.vue';
-import IntelligenceHub from './components/IntelligenceHub.vue';
+import { ref } from 'vue';
+import ExecutionPlanGraph from './components/ExecutionPlanGraph.vue';
+import NodeDetails from './components/NodeDetails.vue';
+import PlanLoader from './components/PlanLoader.vue';
+import AnalysisPanel from './components/AnalysisPanel.vue';
+import PlanComparison from './components/PlanComparison.vue';
+import { usePlanState } from './composables/planState';
+
+const { state, loadComparisonPlan, toggleComparisonMode } = usePlanState();
+
+// File input for comparison plan
+const comparisonFileInput = ref<HTMLInputElement | null>(null);
+
+const openComparisonFilePicker = () => {
+  comparisonFileInput.value?.click();
+};
+
+const handleComparisonFile = async (event: Event) => {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  
+  const text = await file.text();
+  loadComparisonPlan(text);
+  input.value = ''; // Reset for re-selection
+};
 </script>
 
 <template>
-  <div class="application-shell">
-    <header class="masthead">
-      <h1 class="masthead-title">SQL Execution Plan Analyzer</h1>
-      <p class="masthead-subtitle">Interactive Query Performance Visualization System</p>
+  <div class="w-screen h-screen flex flex-col bg-slate-900 overflow-hidden">
+    <!-- Hidden file input for comparison -->
+    <input 
+      ref="comparisonFileInput" 
+      type="file" 
+      accept=".sqlplan,.xml" 
+      class="hidden"
+      @change="handleComparisonFile"
+    />
+    
+    <!-- Header -->
+    <header class="flex items-center justify-between px-6 py-4 bg-gradient-to-r from-indigo-900 to-purple-900 border-b-2 border-indigo-500 shadow-lg">
+      <div>
+        <h1 class="text-2xl font-black text-white tracking-tight">
+          <i class="fa-solid fa-diagram-project mr-2 text-indigo-400"></i>
+          SQL Execution Plan Analyzer
+        </h1>
+        <p class="text-sm text-indigo-200 mt-0.5">Interactive Query Performance Visualization</p>
+      </div>
+      <div class="flex items-center gap-3">
+        <!-- Compare Plans Button -->
+        <button
+          v-if="state.plan"
+          class="px-3 py-1.5 rounded-lg text-sm flex items-center gap-2 transition-colors"
+          :class="state.comparisonMode 
+            ? 'bg-blue-600 text-white hover:bg-blue-500' 
+            : 'bg-slate-800/50 hover:bg-slate-700/50 text-slate-300'"
+          @click="state.comparisonPlan ? toggleComparisonMode() : openComparisonFilePicker()"
+        >
+          <i class="fa-solid fa-code-compare"></i>
+          {{ state.comparisonMode ? 'Hide Compare' : 'Compare Plans' }}
+        </button>
+        <a 
+          href="https://github.com/PsyChonek/SqlPlanForDummies" 
+          target="_blank"
+          class="px-3 py-1.5 bg-slate-800/50 hover:bg-slate-700/50 text-slate-300 rounded-lg text-sm flex items-center gap-2 transition-colors"
+        >
+          <i class="fa-brands fa-github"></i>
+          GitHub
+        </a>
+      </div>
     </header>
     
-    <div class="workspace-grid">
-      <aside class="control-panel">
-        <ArtifactTerminal />
+    <!-- Main Grid -->
+    <div 
+      class="flex-1 gap-4 p-4 overflow-hidden"
+      :class="state.comparisonMode && state.comparisonPlan
+        ? 'grid grid-cols-[320px_1fr_380px] grid-rows-[1fr_280px]'
+        : 'grid grid-cols-[320px_1fr_380px] grid-rows-[1fr_280px]'"
+    >
+      <!-- Left Sidebar: Plan Loader -->
+      <aside class="row-span-2 overflow-hidden">
+        <PlanLoader />
       </aside>
       
-      <main class="primary-viewport">
-        <WaveformRenderer />
+      <!-- Main: Execution Plan Graph -->
+      <main class="overflow-hidden">
+        <ExecutionPlanGraph />
       </main>
       
-      <aside class="analysis-panel">
-        <DiagnosticConsole />
+      <!-- Right Sidebar: Node Details or Comparison -->
+      <aside class="row-span-2 overflow-hidden">
+        <PlanComparison v-if="state.comparisonMode && state.comparisonPlan" />
+        <NodeDetails v-else />
       </aside>
       
-      <section class="intelligence-section">
-        <IntelligenceHub />
+      <!-- Bottom: Analysis Panel -->
+      <section class="overflow-hidden">
+        <AnalysisPanel />
       </section>
     </div>
   </div>
 </template>
-
-<style>
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-:root {
-  font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
-  font-size: 16px;
-  line-height: 1.5;
-  font-weight: 400;
-  color: #f0f0f0;
-  background-color: #0a0e1a;
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-body {
-  margin: 0;
-  padding: 0;
-  width: 100vw;
-  height: 100vh;
-  overflow: hidden;
-}
-
-#app {
-  width: 100%;
-  height: 100%;
-}
-</style>
-
-<style scoped>
-.application-shell {
-  width: 100%;
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-  background: linear-gradient(180deg, #0a0e1a 0%, #0d1421 100%);
-  overflow: hidden;
-}
-
-.masthead {
-  background: linear-gradient(135deg, #1a237e 0%, #283593 100%);
-  padding: 20px 30px;
-  border-bottom: 3px solid #3949ab;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-}
-
-.masthead-title {
-  font-size: 28px;
-  font-weight: 900;
-  color: #ffffff;
-  margin-bottom: 6px;
-  letter-spacing: -0.5px;
-}
-
-.masthead-subtitle {
-  font-size: 14px;
-  color: #b0c4de;
-  font-weight: 500;
-  letter-spacing: 0.5px;
-}
-
-.workspace-grid {
-  flex: 1;
-  display: grid;
-  grid-template-columns: 320px 1fr 380px;
-  grid-template-rows: 1fr 320px;
-  gap: 16px;
-  padding: 16px;
-  overflow: hidden;
-}
-
-.control-panel {
-  grid-column: 1;
-  grid-row: 1 / 3;
-  overflow-y: auto;
-}
-
-.primary-viewport {
-  grid-column: 2;
-  grid-row: 1;
-  overflow: hidden;
-}
-
-.analysis-panel {
-  grid-column: 3;
-  grid-row: 1;
-  overflow-y: auto;
-}
-
-.intelligence-section {
-  grid-column: 2 / 4;
-  grid-row: 2;
-  overflow-y: auto;
-}
-
-::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-
-::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.3);
-  border-radius: 5px;
-}
-
-::-webkit-scrollbar-thumb {
-  background: rgba(100, 150, 255, 0.5);
-  border-radius: 5px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(100, 150, 255, 0.7);
-}
-</style>

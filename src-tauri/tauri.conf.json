@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tauri-app",
+  "productName": "SqlPlanForDummies",
   "version": "0.1.0",
-  "identifier": "com.runner.tauri-app",
+  "identifier": "com.runner.sql-plan-for-dummies",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "tauri-app",
+        "title": "SQL Plan For Dummies",
         "width": 800,
         "height": 600
       }
