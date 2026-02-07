@@ -169,6 +169,7 @@ function parseRelOp(relOpEl: Element): RelOp {
     estimateRebinds: parseFloat(relOpEl.getAttribute('EstimateRebinds') || '0') || undefined,
     estimateRewinds: parseFloat(relOpEl.getAttribute('EstimateRewinds') || '0') || undefined,
     tableCardinality: parseFloat(relOpEl.getAttribute('TableCardinality') || '0') || undefined,
+    attributes: collectAttributes(relOpEl),
     outputColumns: parseOutputColumns(relOpEl),
     runtimeInfo: parseRuntimeInfo(relOpEl),
     children: children.map(parseRelOp),
@@ -249,6 +250,9 @@ function parseRuntimeInfo(relOpEl: Element): RuntimeInfo | undefined {
     actualRows: parseInt(counterEl.getAttribute('ActualRows') || '0', 10),
     actualRowsRead: parseInt(counterEl.getAttribute('ActualRowsRead') || '0', 10) || undefined,
     actualExecutions: parseInt(counterEl.getAttribute('ActualExecutions') || '0', 10),
+    
+    attributes: collectAttributes(counterEl),
+
     actualEndOfScans: parseInt(counterEl.getAttribute('ActualEndOfScans') || '0', 10) || undefined,
     actualElapsedMs: parseFloat(counterEl.getAttribute('ActualElapsedms') || '0'),
     actualCPUMs: parseFloat(counterEl.getAttribute('ActualCPUms') || '0'),
@@ -476,10 +480,23 @@ function createEmptyRelOp(): RelOp {
     estimatedTotalSubtreeCost: 0,
     avgRowSize: 0,
     parallel: false,
+    attributes: {},
     outputColumns: [],
     children: [],
     operationDetails: {},
   };
+}
+
+/**
+ * Collect all attributes from an element
+ */
+function collectAttributes(el: Element): Record<string, string> {
+  const attrs: Record<string, string> = {};
+  for (let i = 0; i < el.attributes.length; i++) {
+    const attr = el.attributes[i];
+    attrs[attr.name] = attr.value;
+  }
+  return attrs;
 }
 
 /**

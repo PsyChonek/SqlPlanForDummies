@@ -204,6 +204,51 @@ const predicates = computed(() => {
   
   return results;
 });
+
+// Helper to flatten object for dynamic display
+const formattedProperties = computed(() => {
+  if (!selectedNode.value) return [];
+  
+  const processObject = (obj: any, prefix = ''): { key: string; value: any }[] => {
+    let result: { key: string; value: any }[] = [];
+    
+    if (!obj || typeof obj !== 'object') return [];
+
+    Object.keys(obj).sort().forEach(key => {
+      // Skip internal navigation properties and already displayed specialized structures if redundant
+      if (key === 'children' || key === 'parent') return;
+      
+      const value = obj[key];
+      const currentKey = prefix ? `${prefix}.${key}` : key;
+      
+      if (value === null || value === undefined) {
+        return;
+      } 
+      
+      if (Array.isArray(value)) {
+        if (value.length === 0) return;
+        
+        // Check if array of primitives
+        if (value.length > 0 && typeof value[0] !== 'object') {
+           result.push({ key: currentKey, value: value.join(', ') });
+        } else {
+           // Recursively process array items
+           value.forEach((item, index) => {
+               result = result.concat(processObject(item, `${currentKey}[${index}]`));
+           });
+        }
+      } else if (typeof value === 'object') {
+        result = result.concat(processObject(value, currentKey));
+      } else {
+        result.push({ key: currentKey, value: String(value) });
+      }
+    });
+    
+    return result;
+  };
+
+  return processObject(selectedNode.value);
+});
 </script>
 
 <template>
@@ -382,6 +427,24 @@ const predicates = computed(() => {
         <div class="flex items-center gap-2 text-amber-400">
           <i class="fa-solid fa-network-wired"></i>
           <span class="text-sm font-semibold">Parallel Execution</span>
+        </div>
+      </div>
+
+      <!-- All Properties (Dynamic) -->
+      <div class="bg-slate-700/50 rounded-xl p-4 mt-4">
+        <h5 class="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-3 block">
+          <i class="fa-solid fa-list-ul text-indigo-400"></i>
+          All Properties
+        </h5>
+        <div class="space-y-1 overflow-x-auto">
+          <div 
+            v-for="prop in formattedProperties" 
+            :key="prop.key"
+            class="grid grid-cols-[1fr_2fr] gap-2 text-xs border-b border-slate-600/50 py-1 hover:bg-slate-600/30"
+          >
+            <span class="text-slate-400 font-mono break-all">{{ prop.key }}</span>
+            <span class="text-slate-200 font-mono break-all">{{ prop.value }}</span>
+          </div>
         </div>
       </div>
     </div>

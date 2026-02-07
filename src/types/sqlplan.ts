@@ -68,6 +68,9 @@ export interface RelOp {
   estimateRewinds?: number;
   tableCardinality?: number;
   
+  // Generic key-value pair for any attribute found in the XML
+  attributes?: Record<string, string>;
+
   // Output columns
   outputColumns: ColumnReference[];
   
@@ -86,6 +89,10 @@ export interface RuntimeInfo {
   actualRows: number;
   actualRowsRead?: number;
   actualExecutions: number;
+  
+  // Generic attributes
+  attributes?: Record<string, string>;
+  
   actualEndOfScans?: number;
   actualElapsedMs: number;
   actualCPUMs: number;
