@@ -272,3 +272,8 @@ import './styles/main.css';
 @import "tailwindcss";
 @import "@fortawesome/fontawesome-free/css/all.min.css";
 ```
+
+## Rules
+
+- Never use emojis in the UI - only FontAwesome icons
+- Always maintain a consistent dark theme with slate colors
