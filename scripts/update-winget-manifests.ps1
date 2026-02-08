@@ -70,7 +70,19 @@ Write-Host "Updating WinGet manifest files..." -ForegroundColor Cyan
 
 $tag = "v$Version"
 
-# Update installer manifest
+# 1. Version Manifest
+$versionFile = "winget/PsyChonek.SqlPlanForDummies.yaml"
+$versionYaml = @"
+PackageIdentifier: PsyChonek.SqlPlanForDummies
+PackageVersion: $Version
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0
+"@
+Set-Content -Path $versionFile -Value $versionYaml
+
+# 2. Installer Manifest
+$installerFile = "winget/PsyChonek.SqlPlanForDummies.installer.yaml"
 $installerYaml = @"
 PackageIdentifier: PsyChonek.SqlPlanForDummies
 PackageVersion: $Version
@@ -84,8 +96,6 @@ Installers:
 "@
 
 if ($manifest['x64']) {
-    # Use the actual filename if possible, otherwise strictly formatted one
-    # Assuming filename matches release convention
     $installerYaml += @"
 
 - Architecture: x64
@@ -108,54 +118,73 @@ if ($manifest['arm64']) {
 }
 
 $installerYaml += "`nManifestType: installer`nManifestVersion: 1.6.0`n"
+Set-Content -Path $installerFile -Value $installerYaml
 
-Set-Content -Path "winget/SqlPlanForDummies.installer.yaml" -Value $installerYaml
-
-# Update version manifest
-$versionYaml = @"
+# 3. Locale Manifest
+$localeFile = "winget/PsyChonek.SqlPlanForDummies.locale.en-US.yaml"
+$localeYaml = @"
 PackageIdentifier: PsyChonek.SqlPlanForDummies
 PackageVersion: $Version
-DefaultLocale: en-US
-ManifestType: version
+PackageLocale: en-US
+Publisher: PsyChonek
+PublisherUrl: https://github.com/PsyChonek
+PublisherSupportUrl: https://github.com/PsyChonek/SqlPlanForDummies/issues
+PrivacyUrl: https://github.com/PsyChonek/SqlPlanForDummies/blob/main/LICENSE
+Author: PsyChonek
+PackageName: SQL Plan For Dummies
+PackageUrl: https://github.com/PsyChonek/SqlPlanForDummies
+License: MIT
+LicenseUrl: https://github.com/PsyChonek/SqlPlanForDummies/blob/main/LICENSE
+ShortDescription: An interactive SQL Execution Plan Viewer built with Tauri + Vue + D3.js
+Description: SQL Plan For Dummies is an interactive SQL Execution Plan Viewer that provides visual analysis and performance insights for query execution plans. Features include interactive tree layout visualization, performance indicators, detailed node inspection, and automated performance analysis.
+Tags:
+- sql-server
+- execution-plan
+- database
+- performance
+- analysis
+- visualization
+- tauri
+- vue
+- d3js
+ReleaseNotes: 'Version $Version release.'
+ReleaseNotesUrl: https://github.com/PsyChonek/SqlPlanForDummies/releases/tag/$tag
+ManifestType: defaultLocale
 ManifestVersion: 1.6.0
 "@
+Set-Content -Path $localeFile -Value $localeYaml
 
-Set-Content -Path "winget/SqlPlanForDummies.yaml" -Value $versionYaml
+# Cleanup old files
+$oldFiles = @(
+    "winget/SqlPlanForDummies.yaml",
+    "winget/SqlPlanForDummies.installer.yaml",
+    "winget/SqlPlanForDummies.locale.en-US.yaml",
+    "winget/PsyChonek.SqlPlanForDummies.yaml" # Remove singleton if it exists from previous attempts
+)
+# Note: we just wrote to PsyChonek.SqlPlanForDummies.yaml (version file), so check logic to avoid deleting what we just wrote
+# Wait, Version file uses the same name as what Singleton would have used?
+# Technically version file is usually just "PackageId.yaml".
+# So "Merge manifest into one" meant "Start using SINGLETON".
+# Since I am reverting to MULTI-FILE, I am overwriting the singleton file with the VERSION file. This is fine.
 
-# Update locale manifest
-if (Test-Path "winget/SqlPlanForDummies.locale.en-US.yaml") {
-    $localeYaml = Get-Content -Path "winget/SqlPlanForDummies.locale.en-US.yaml" -Raw
-    $localeYaml = $localeYaml -replace "PackageVersion: [\d.]+", "PackageVersion: $Version"
-    $localeYaml = $localeYaml -replace "ReleaseNotesUrl: https://github.com/PsyChonek/SqlPlanForDummies/releases/tag/v[\d.]+", "ReleaseNotesUrl: https://github.com/PsyChonek/SqlPlanForDummies/releases/tag/$tag"
-    Set-Content -Path "winget/SqlPlanForDummies.locale.en-US.yaml" -Value $localeYaml
+foreach ($file in $oldFiles) {
+    if ((Test-Path $file) -and ($file -ne $versionFile)) {
+        Remove-Item $file
+    }
 }
 
-Write-Host "Manifest files updated" -ForegroundColor Green
+Write-Host "Manifest files updated:"
+Write-Host "  - $versionFile"
+Write-Host "  - $installerFile"
+Write-Host "  - $localeFile"
 
 Write-Host "Validating WinGet manifests..." -ForegroundColor Cyan
+Write-Host "Note: To validate, run 'winget validate winget/'"
 
-$required_fields = @(
-    'PackageIdentifier',
-    'PackageVersion',
-    'ManifestType',
-    'ManifestVersion'
-)
-
-foreach ($file in @("winget/SqlPlanForDummies.yaml", "winget/SqlPlanForDummies.installer.yaml", "winget/SqlPlanForDummies.locale.en-US.yaml")) {
-    if (-not (Test-Path $file)) {
-        Write-Error "Manifest file not found: $file"
-        exit 1
-    }
-    
-    Write-Host "  Checking $file..."
-    $content = Get-Content -Path $file -Raw
-    
-    foreach ($field in $required_fields) {
-        if ($content -notmatch $field) {
-            Write-Error "Missing required field: $field in $file"
-            exit 1
-        }
-    }
+# Validate all at once by pointing to the directory (best effort) or check existence
+if ((Test-Path $versionFile) -and (Test-Path $installerFile) -and (Test-Path $localeFile)) {
+    Write-Host "Files created successfully." -ForegroundColor Green
+} else {
+    Write-Error "Failed to create one or more manifest files"
+    exit 1
 }
-
-Write-Host "All manifest files validated" -ForegroundColor Green

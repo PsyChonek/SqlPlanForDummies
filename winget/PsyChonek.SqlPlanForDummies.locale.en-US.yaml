@@ -5,6 +5,7 @@ Publisher: PsyChonek
 PublisherUrl: https://github.com/PsyChonek
 PublisherSupportUrl: https://github.com/PsyChonek/SqlPlanForDummies/issues
 PrivacyUrl: https://github.com/PsyChonek/SqlPlanForDummies/blob/main/LICENSE
+Author: PsyChonek
 PackageName: SQL Plan For Dummies
 PackageUrl: https://github.com/PsyChonek/SqlPlanForDummies
 License: MIT
@@ -21,8 +22,7 @@ Tags:
 - tauri
 - vue
 - d3js
-ReleaseNotes: 'Version 1.1.0: Initial winget release with full execution plan visualization and analysis capabilities.'
+ReleaseNotes: 'Version 1.2.0 release.'
 ReleaseNotesUrl: https://github.com/PsyChonek/SqlPlanForDummies/releases/tag/v1.2.0
-ManifestType: locale
+ManifestType: defaultLocale
 ManifestVersion: 1.6.0
-
