@@ -85,20 +85,10 @@ jobs:
         run: npm run tauri icon assets/Icon.png
 
       - name: Build Tauri app (x64)
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tauriScript: npx tauri
-          args: --target x86_64-pc-windows-msvc
+        run: npm run tauri build -- --target x86_64-pc-windows-msvc
 
       - name: Build Tauri app (ARM64)
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tauriScript: npx tauri
-          args: --target aarch64-pc-windows-msvc
+        run: npm run tauri build -- --target aarch64-pc-windows-msvc
 
       - name: Collect release artifacts
         id: artifacts
