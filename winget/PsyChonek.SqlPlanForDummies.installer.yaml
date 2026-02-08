@@ -1,5 +1,5 @@
 PackageIdentifier: PsyChonek.SqlPlanForDummies
-PackageVersion: 1.4.0
+PackageVersion: 1.5.0
 Platform:
 - Windows.Desktop
 MinimumOSVersion: 10.0.0.0
@@ -9,14 +9,14 @@ InstallModes:
 Installers:
 - Architecture: x64
   InstallerType: msi
-  InstallerUrl: https://github.com/PsyChonek/SqlPlanForDummies/releases/download/v1.4.0/SqlPlanForDummies_1.4.0_x64_en-US.msi
-  InstallerSha256: E0CDDFC377BE8A0D865CF41D6042D5869C9615B51B385C778801DC6FE87F0DD2
-  ProductCode: '{B6CC17B1-6735-42DD-A3C9-FB235C023029}'
+  InstallerUrl: https://github.com/PsyChonek/SqlPlanForDummies/releases/download/v1.5.0/SqlPlanForDummies_1.5.0_x64_en-US.msi
+  InstallerSha256: 0096E8A43E223B6CD5F274842D5F56296EBBA56880BD508AE54DDB0B56286AEF
+  ProductCode: '{8028333E-2D1C-4287-BAA6-BAA0B921B8CC}'
 - Architecture: arm64
   InstallerType: msi
-  InstallerUrl: https://github.com/PsyChonek/SqlPlanForDummies/releases/download/v1.4.0/SqlPlanForDummies_1.4.0_arm64_en-US.msi
-  InstallerSha256: F53524A96EF7C04E7DFC5FFDB3456BE7329AECFF0692D27BF3C49C5DC2A4539C
-  ProductCode: '{AF0CA763-B9A8-48CF-B506-9D748BD01FC5}'
+  InstallerUrl: https://github.com/PsyChonek/SqlPlanForDummies/releases/download/v1.5.0/SqlPlanForDummies_1.5.0_arm64_en-US.msi
+  InstallerSha256: 56DA585C6B5A561CA1BA9AC9331F047BFA362B628698C03E09AAC2986874BF15
+  ProductCode: '{A55C0751-0765-46B1-B1D2-645AB842FD2D}'
 ManifestType: installer
 ManifestVersion: 1.6.0
 
