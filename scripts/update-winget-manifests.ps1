@@ -111,7 +111,7 @@ if ($manifest['arm64']) {
 
 - Architecture: arm64
   InstallerType: msi
-  InstallerUrl: https://github.com/PsyChonek/SqlPlanForDummies/releases/download/$tag/SqlPlanForDummies_$($Version)_aarch64_en-US.msi
+  InstallerUrl: https://github.com/PsyChonek/SqlPlanForDummies/releases/download/$tag/SqlPlanForDummies_$($Version)_arm64_en-US.msi
   InstallerSha256: $($manifest['arm64'].sha256)
   ProductCode: '$($manifest['arm64'].productCode)'
 "@

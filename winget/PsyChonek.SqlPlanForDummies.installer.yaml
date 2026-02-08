@@ -14,7 +14,7 @@ Installers:
   ProductCode: '{971B2118-2433-46BF-8D97-84D294857BD3}'
 - Architecture: arm64
   InstallerType: msi
-  InstallerUrl: https://github.com/PsyChonek/SqlPlanForDummies/releases/download/v1.2.0/SqlPlanForDummies_1.2.0_aarch64_en-US.msi
+  InstallerUrl: https://github.com/PsyChonek/SqlPlanForDummies/releases/download/v1.2.0/SqlPlanForDummies_1.2.0_arm64_en-US.msi
   InstallerSha256: AA1E8B9C3B3C6DB2FDE86A661003D63B2F8BC85FE6C76E9FDA4382BCA73FB9AD
   ProductCode: '{BF6EBE35-F519-4BA2-A235-B38760E1FD55}'
 ManifestType: installer

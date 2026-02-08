@@ -118,6 +118,20 @@ jobs:
           echo "Collected artifacts:"
           ls -la "$ARTIFACTS_DIR/"
 
+      - name: Rename artifacts
+        shell: bash
+        run: |
+          cd release-artifacts
+          for file in *; do
+            newname=$(echo "$file" | sed 's/SQL\.Plan\.For\.Dummies/SqlPlanForDummies/g')
+            if [ "$file" != "$newname" ]; then
+              echo "Renaming: $file -> $newname"
+              mv "$file" "$newname"
+            fi
+          done
+          echo "Renamed artifacts:"
+          ls -la
+
       - name: Generate WinGet Manifests
         shell: pwsh
         run: |
