@@ -73,6 +73,8 @@ $tag = "v$Version"
 # 1. Version Manifest
 $versionFile = "winget/PsyChonek.SqlPlanForDummies.yaml"
 $versionYaml = @"
+# yaml-language-server: `$schema=https://aka.ms/winget-manifest.version.1.6.0.schema.json
+
 PackageIdentifier: PsyChonek.SqlPlanForDummies
 PackageVersion: $Version
 DefaultLocale: en-US
@@ -84,6 +86,8 @@ Set-Content -Path $versionFile -Value $versionYaml
 # 2. Installer Manifest
 $installerFile = "winget/PsyChonek.SqlPlanForDummies.installer.yaml"
 $installerYaml = @"
+# yaml-language-server: `$schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+
 PackageIdentifier: PsyChonek.SqlPlanForDummies
 PackageVersion: $Version
 Platform:
@@ -123,6 +127,8 @@ Set-Content -Path $installerFile -Value $installerYaml
 # 3. Locale Manifest
 $localeFile = "winget/PsyChonek.SqlPlanForDummies.locale.en-US.yaml"
 $localeYaml = @"
+# yaml-language-server: `$schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+
 PackageIdentifier: PsyChonek.SqlPlanForDummies
 PackageVersion: $Version
 PackageLocale: en-US
