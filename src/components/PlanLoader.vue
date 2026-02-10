@@ -1,8 +1,33 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import { usePlanState } from '../composables/planState';
+import { useQueryHistory, type PlanHistoryEntry } from '../composables/useQueryHistory';
 
-const { state, loadPlan, statements, selectStatement } = usePlanState();
+const { state, loadPlan, loadComparisonPlan, statements, selectStatement } = usePlanState();
+const { recentPlans, loadHistory } = useQueryHistory();
+
+const loadHistoryPlan = (entry: PlanHistoryEntry) => {
+  loadPlan(entry.planXml);
+};
+
+const compareWithPlan = (entry: PlanHistoryEntry) => {
+  loadComparisonPlan(entry.planXml);
+};
+
+const formatRelativeTime = (dateStr: string) => {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return 'Just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+};
+
+onMounted(() => {
+  loadHistory();
+});
 
 const fileInput = ref<HTMLInputElement>();
 const dragActive = ref(false);
@@ -170,8 +195,49 @@ const setStatus = (message: string, error = false) => {
           </button>
         </div>
       </div>
+
+      <!-- Recent Executions -->
+      <div v-if="recentPlans.length > 0" class="mt-6">
+        <h4 class="text-sm font-semibold text-slate-400 mb-2 flex items-center gap-2">
+          <i class="fa-solid fa-clock-rotate-left"></i>
+          Recent Executions ({{ recentPlans.length }})
+        </h4>
+
+        <div class="space-y-2">
+          <div
+            v-for="entry in recentPlans"
+            :key="entry.id"
+            class="w-full text-left px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
+          >
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-mono truncate flex-1">{{ entry.sqlPreview }}</span>
+              <span class="text-xs text-slate-500 ml-2 whitespace-nowrap">{{ formatRelativeTime(entry.executedAt) }}</span>
+            </div>
+            <div class="flex items-center justify-between mt-1">
+              <span class="text-xs text-slate-500">
+                {{ entry.planType }}
+              </span>
+              <div class="flex items-center gap-1">
+                <button
+                  class="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/50 text-blue-300 hover:bg-blue-800/50 transition-colors"
+                  @click="loadHistoryPlan(entry)"
+                >
+                  <i class="fa-solid fa-eye mr-0.5"></i> View
+                </button>
+                <button
+                  v-if="state.plan"
+                  class="text-[10px] px-1.5 py-0.5 rounded bg-purple-900/50 text-purple-300 hover:bg-purple-800/50 transition-colors"
+                  @click="compareWithPlan(entry)"
+                >
+                  <i class="fa-solid fa-code-compare mr-0.5"></i> Compare
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
-    
+
     <!-- Footer info -->
     <div class="px-4 py-2 bg-slate-700/50 border-t border-slate-600">
       <p class="text-xs text-slate-500 flex items-center gap-1">

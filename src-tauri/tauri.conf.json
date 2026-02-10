@@ -12,9 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "SQL Plan For Dummies",
-        "width": 1600,
-        "height": 1200
+        "title": "SQL Plan For Dummies"
       }
     ],
     "security": {
