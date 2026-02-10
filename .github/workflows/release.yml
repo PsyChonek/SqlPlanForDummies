@@ -156,26 +156,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
-          name: SqlPlanForDummies v${{ steps.version.outputs.version }}
+          name: SQL Plan For Dummies v${{ steps.version.outputs.version }}
           generate_release_notes: true
           files: release-artifacts/*
-          body: |
-            ## Installation
-            
-            ### Windows Package Manager (WinGet)
-            
-            Once approved by the WinGet team, install with:
-            ```
-            winget install PsyChonek.SqlPlanForDummies
-            ```
-            
-            **Status**: WinGet manifests have been automatically generated and are ready for submission!
-            
-            See [winget/](https://github.com/PsyChonek/SqlPlanForDummies/tree/main/winget) directory for manifest files.
-            
-            ### Traditional Installation
-            
-            - **MSI Installer** - Windows Standard Installation
-            - **Portable** - Run without installation
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
