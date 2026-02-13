@@ -161,7 +161,7 @@ Connections between nodes show:
 2. Handle multiple statements in a single plan
 3. Preserve all `RelOp` attributes for detailed view
 4. Use FontAwesome icons - NEVER emojis
-5. Apply Bulma classes for consistent styling
+5. Apply Tailwind CSS utility classes for consistent styling
 6. Test with the example `company.sqlplan` file
 
 ### When Fixing Bugs
