@@ -3540,7 +3540,7 @@ dependencies = [
 
 [[package]]
 name = "sql-plan-for-dummies"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",

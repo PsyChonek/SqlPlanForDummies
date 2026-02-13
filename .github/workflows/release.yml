@@ -114,14 +114,20 @@ jobs:
         shell: bash
         run: |
           cd release-artifacts
+          echo "Original artifacts:"
+          ls -la
           for file in *; do
-            newname=$(echo "$file" | sed 's/SQL\.Plan\.For\.Dummies/SqlPlanForDummies/g')
+            # Handle "SQL.Plan.For.Dummies", "SQL Plan For Dummies", and "SQL_Plan_For_Dummies" patterns
+            newname=$(echo "$file" | sed -e 's/SQL\.Plan\.For\.Dummies/SqlPlanForDummies/g' -e 's/SQL Plan For Dummies/SqlPlanForDummies/g' -e 's/SQL_Plan_For_Dummies/SqlPlanForDummies/g')
             if [ "$file" != "$newname" ]; then
-              echo "Renaming: $file -> $newname"
+              echo "Renaming: '$file' -> '$newname'"
               mv "$file" "$newname"
+            else
+              echo "No rename needed for: $file"
             fi
           done
-          echo "Renamed artifacts:"
+          echo ""
+          echo "Final artifacts:"
           ls -la
 
       - name: Generate WinGet Manifests
@@ -167,6 +173,7 @@ jobs:
   winget:
     needs: release
     runs-on: windows-latest
+    environment: release
     steps:
       - name: Publish to WinGet
         uses: vedantmgoyal9/winget-releaser@v2

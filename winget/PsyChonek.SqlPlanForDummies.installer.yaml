@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
 
 PackageIdentifier: PsyChonek.SqlPlanForDummies
-PackageVersion: 2.0.1
+PackageVersion: 2.1.0
 Platform:
 - Windows.Desktop
 MinimumOSVersion: 10.0.0.0
@@ -11,14 +11,14 @@ InstallModes:
 Installers:
 - Architecture: x64
   InstallerType: msi
-  InstallerUrl: https://github.com/PsyChonek/SqlPlanForDummies/releases/download/v2.0.1/SqlPlanForDummies_2.0.1_x64_en-US.msi
-  InstallerSha256: 4D770FB4C5E4F9BD247D9109425A0BD60E569341FEE91EA349247B5174462E37
-  ProductCode: '{74FB3E66-46D8-40AF-B94F-27EFDBA4E1EE}'
+  InstallerUrl: https://github.com/PsyChonek/SqlPlanForDummies/releases/download/v2.1.0/SqlPlanForDummies_2.1.0_x64_en-US.msi
+  InstallerSha256: 027F6D576D7DD61C19191463BB26025B1AA12A412C2520266C9B006B2C55B6EE
+  ProductCode: '{4BB0B349-160B-4CC5-B010-EC16664D755C}'
 - Architecture: arm64
   InstallerType: msi
-  InstallerUrl: https://github.com/PsyChonek/SqlPlanForDummies/releases/download/v2.0.1/SqlPlanForDummies_2.0.1_arm64_en-US.msi
-  InstallerSha256: ABA0AA7DD421FE932AA41AE203C6C0F170570F940D6AB88995E722F7FF09AD94
-  ProductCode: '{F3F6D226-FB75-43C7-8ADE-F69D740E6BF4}'
+  InstallerUrl: https://github.com/PsyChonek/SqlPlanForDummies/releases/download/v2.1.0/SqlPlanForDummies_2.1.0_arm64_en-US.msi
+  InstallerSha256: 45ED15528ECAD2BC9F2CB488C34027E881EEFDFD889E3C77B711E867927C6D5C
+  ProductCode: '{443F1DD9-EEF1-45E0-81E4-3AB936EAFD38}'
 ManifestType: installer
 ManifestVersion: 1.6.0
 
