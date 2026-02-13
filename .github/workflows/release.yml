@@ -19,6 +19,8 @@ permissions:
 jobs:
   release:
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - name: Checkout
@@ -171,3 +173,4 @@ jobs:
         with:
           identifier: PsyChonek.SqlPlanForDummies
           token: ${{ secrets.WINGET_TOKEN }}
+          release-tag: v${{ needs.release.outputs.version }}
