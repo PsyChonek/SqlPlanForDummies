@@ -126,9 +126,9 @@ const operatorDiffs = computed(() => {
 </script>
 
 <template>
-  <div class="h-full flex flex-col bg-slate-800 overflow-hidden">
+  <div class="h-full flex flex-col bg-slate-800 rounded-2xl shadow-xl overflow-hidden">
     <!-- Header -->
-    <div class="flex items-center justify-between p-3 border-b border-slate-700">
+    <div class="flex items-center justify-between px-4 py-3 bg-slate-700 border-b border-slate-600">
       <div class="flex items-center gap-2">
         <i class="fa-solid fa-code-compare text-blue-400"></i>
         <span class="font-medium text-slate-200">Plan Comparison</span>
@@ -183,29 +183,29 @@ const operatorDiffs = computed(() => {
             Overall Comparison
           </h3>
           
-          <div class="grid grid-cols-3 gap-4">
+          <div class="flex flex-wrap justify-center gap-x-8 gap-y-4">
             <!-- Cost Comparison -->
-            <div class="text-center">
+            <div class="text-center min-w-35">
               <div class="text-xs text-slate-400 mb-1">Estimated Cost</div>
-              <div class="flex items-center justify-center gap-2 mb-1">
-                <span class="text-lg text-slate-200">{{ primaryMetrics.totalCost.toFixed(2) }}</span>
+              <div class="flex items-center justify-center gap-1 mb-1 text-sm whitespace-nowrap">
+                <span class="text-slate-200">{{ primaryMetrics.totalCost.toFixed(2) }}</span>
                 <i class="fa-solid fa-arrow-right text-slate-500 text-xs"></i>
-                <span class="text-lg text-slate-200">{{ comparisonMetrics.totalCost.toFixed(2) }}</span>
+                <span class="text-slate-200">{{ comparisonMetrics.totalCost.toFixed(2) }}</span>
               </div>
               <div :class="formatDiff(getCostDiff).class" class="text-sm font-medium">
                 {{ formatDiff(getCostDiff).text }}
               </div>
             </div>
-            
+
             <!-- Time Comparison -->
-            <div class="text-center">
+            <div class="text-center min-w-35">
               <div class="text-xs text-slate-400 mb-1">Actual Time</div>
-              <div class="flex items-center justify-center gap-2 mb-1">
-                <span class="text-lg text-slate-200">
+              <div class="flex items-center justify-center gap-1 mb-1 text-sm whitespace-nowrap">
+                <span class="text-slate-200">
                   {{ primaryMetrics.totalTime !== null ? formatTime(primaryMetrics.totalTime) : 'N/A' }}
                 </span>
                 <i class="fa-solid fa-arrow-right text-slate-500 text-xs"></i>
-                <span class="text-lg text-slate-200">
+                <span class="text-slate-200">
                   {{ comparisonMetrics.totalTime !== null ? formatTime(comparisonMetrics.totalTime) : 'N/A' }}
                 </span>
               </div>
@@ -213,14 +213,14 @@ const operatorDiffs = computed(() => {
                 {{ formatDiff(getTimeDiff).text }}
               </div>
             </div>
-            
+
             <!-- Node Count -->
-            <div class="text-center">
+            <div class="text-center min-w-35">
               <div class="text-xs text-slate-400 mb-1">Operators</div>
-              <div class="flex items-center justify-center gap-2 mb-1">
-                <span class="text-lg text-slate-200">{{ primaryMetrics.nodeCount }}</span>
+              <div class="flex items-center justify-center gap-1 mb-1 text-sm whitespace-nowrap">
+                <span class="text-slate-200">{{ primaryMetrics.nodeCount }}</span>
                 <i class="fa-solid fa-arrow-right text-slate-500 text-xs"></i>
-                <span class="text-lg text-slate-200">{{ comparisonMetrics.nodeCount }}</span>
+                <span class="text-slate-200">{{ comparisonMetrics.nodeCount }}</span>
               </div>
               <div class="text-sm text-slate-400">
                 {{ comparisonMetrics.nodeCount - primaryMetrics.nodeCount > 0 ? '+' : '' }}{{ comparisonMetrics.nodeCount - primaryMetrics.nodeCount }}
