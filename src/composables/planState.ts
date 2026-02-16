@@ -136,9 +136,7 @@ export const usePlanState = () => {
   const clearComparisonPlan = () => {
     state.comparisonPlan = null;
     state.comparisonStatement = null;
-    if (!state.plan) {
-      state.comparisonMode = false;
-    }
+    state.comparisonMode = false;
     state.revision++;
   };
 
