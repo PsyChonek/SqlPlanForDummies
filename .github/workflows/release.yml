@@ -12,12 +12,24 @@ on:
           - patch
           - minor
           - major
+      skip_tests:
+        description: 'Skip CI tests before release'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
 
 jobs:
+  tests:
+    name: Run CI Tests
+    if: ${{ !inputs.skip_tests }}
+    uses: ./.github/workflows/ci.yml
+
   release:
+    needs: [tests]
+    if: always() && (needs.tests.result == 'success' || needs.tests.result == 'skipped')
     runs-on: windows-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
