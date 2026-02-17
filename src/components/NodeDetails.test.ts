@@ -1,5 +1,4 @@
 import { mount } from '@vue/test-utils';
-import { defineComponent } from 'vue';
 import NodeDetails from './NodeDetails.vue';
 import { usePlanState } from '../composables/planState';
 
