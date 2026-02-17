@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-16"?>
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.5" Build="17.0.4006.2">
+  <BatchSequence>
+    <Batch>
+      <Statements>
+        <StmtSimple StatementId="1" StatementText="SELECT * FROM Users" StatementType="SELECT"
+                    StatementSubTreeCost="0.0065704" StatementEstRows="100"
+                    QueryHash="0x12345" QueryPlanHash="0xABCDE">
+          <QueryPlan DegreeOfParallelism="1" CachedPlanSize="32">
+            <RelOp NodeId="0" PhysicalOp="Table Scan" LogicalOp="Table Scan"
+                   EstimateRows="100" EstimateCPU="0.001" EstimateIO="0.005"
+                   EstimatedTotalSubtreeCost="0.006" AvgRowSize="50" Parallel="false">
+              <OutputList>
+                <ColumnReference Database="[TestDB]" Schema="[dbo]" Table="[Users]" Column="UserId" />
+                <ColumnReference Database="[TestDB]" Schema="[dbo]" Table="[Users]" Column="UserName" />
+              </OutputList>
+              <IndexScan Ordered="false" ForcedIndex="false" ForceSeek="false">
+                <DefinedValues>
+                  <DefinedValue>
+                    <ColumnReference Database="[TestDB]" Schema="[dbo]" Table="[Users]" Column="UserId" />
+                  </DefinedValue>
+                  <DefinedValue>
+                    <ColumnReference Database="[TestDB]" Schema="[dbo]" Table="[Users]" Column="UserName" />
+                  </DefinedValue>
+                </DefinedValues>
+                <Object Database="[TestDB]" Schema="[dbo]" Table="[Users]" Index="[PK_Users]" IndexKind="Clustered" Storage="RowStore" />
+              </IndexScan>
+            </RelOp>
+          </QueryPlan>
+        </StmtSimple>
+      </Statements>
+    </Batch>
+  </BatchSequence>
+</ShowPlanXML>
