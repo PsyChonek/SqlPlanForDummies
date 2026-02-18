@@ -1,7 +1,7 @@
 # SQL Plan For Dummies
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows-blue.svg)](https://github.com/yourusername/SqlPlanForDummies)
+[![Platform](https://img.shields.io/badge/platform-Windows-blue.svg)](https://github.com/PsyChonek/SqlPlanForDummies)
 
 An interactive SQL Execution Plan Viewer built with Tauri + Vue + D3.js that provides visual analysis and performance insights for query execution plans.
 
@@ -9,7 +9,7 @@ An interactive SQL Execution Plan Viewer built with Tauri + Vue + D3.js that pro
 
 ## Quick Start
 
-1. **Install**: `winget install SqlPlanForDummies`
+1. **Install**: `winget install PsyChonek.SqlPlanForDummies`
 2. **Get a plan**: In SSMS, enable "Include Actual Execution Plan" (Ctrl+M), run your query, and save as `.sqlplan`
 3. **Analyze**: Drag the `.sqlplan` file into the app and review performance insights
 
@@ -37,16 +37,16 @@ An interactive SQL Execution Plan Viewer built with Tauri + Vue + D3.js that pro
 **Winget (Recommended):**
 
 ```bash
-winget install SqlPlanForDummies
+winget install PsyChonek.SqlPlanForDummies
 ```
 
 **MSI Installer:**
-Download from [Releases](https://github.com/yourusername/SqlPlanForDummies/releases)
+Download from [Releases](https://github.com/PsyChonek/SqlPlanForDummies/releases)
 
 **Build from Source:**
 
 ```bash
-git clone https://github.com/yourusername/SqlPlanForDummies.git
+git clone https://github.com/PsyChonek/SqlPlanForDummies.git
 cd SqlPlanForDummies
 npm install
 npm run tauri dev    # Development
@@ -100,4 +100,4 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ---
 
-Made for SQL Server DBAs and Developers by [@yourusername](https://github.com/yourusername)
+Made for SQL Server DBAs and Developers by [@PsyChonek](https://github.com/PsyChonek)
