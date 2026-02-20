@@ -394,9 +394,9 @@ function highlightText(text: string, term: string): string {
             <span class="text-slate-400">Table</span>
             <span class="text-slate-200 font-mono">{{ indexDetails.table }}</span>
           </div>
-          <div v-if="indexDetails.index" class="flex justify-between">
+          <div v-if="indexDetails.index" class="flex flex-col gap-0.5">
             <span class="text-slate-400">Index</span>
-            <span class="text-slate-200 font-mono">{{ indexDetails.index }}</span>
+            <span class="text-slate-200 font-mono break-all">{{ indexDetails.index }}</span>
           </div>
           <div v-if="indexDetails.indexKind" class="flex justify-between">
             <span class="text-slate-400">Type</span>
