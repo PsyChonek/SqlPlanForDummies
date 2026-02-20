@@ -178,30 +178,33 @@ function parseRelOp(relOpEl: Element): RelOp {
 }
 
 /**
- * Find all direct child RelOp elements (they can be nested in operation-specific elements)
+ * Find all direct child RelOp elements (they can be nested in operation-specific elements).
+ * Scans all child elements generically so operator types like Extension (UDX/FOR JSON),
+ * Spool, NestedLoops, etc. are all handled without maintaining a hardcoded list.
  */
 function findChildRelOps(parentEl: Element): Element[] {
+  const seen = new Set<Element>();
   const children: Element[] = [];
-  
-  // Direct children
-  const directRelOps = getChildElements(parentEl, 'RelOp');
-  children.push(...directRelOps);
-  
-  // RelOps nested in operation-specific elements
-  const operationElements = [
-    'NestedLoops', 'Hash', 'Merge', 'Sort', 'StreamAggregate', 'HashAggregate',
-    'Parallelism', 'Spool', 'Concatenation', 'Sequence', 'ComputeScalar',
-    'Assert', 'Filter', 'Top', 'IndexScan', 'TableScan', 'Update', 'Insert', 'Delete'
-  ];
-  
-  for (const opName of operationElements) {
-    const opEl = getChildElement(parentEl, opName);
-    if (opEl) {
-      const nestedRelOps = getChildElements(opEl, 'RelOp');
-      children.push(...nestedRelOps);
+
+  for (const child of parentEl.children) {
+    if (child.localName === 'RelOp') {
+      // Direct RelOp child
+      if (!seen.has(child)) {
+        seen.add(child);
+        children.push(child);
+      }
+    } else {
+      // Operator-specific wrapper element (NestedLoops, Extension, Spool, etc.)
+      // RelOp children live one level inside these wrappers.
+      for (const grandchild of child.children) {
+        if (grandchild.localName === 'RelOp' && !seen.has(grandchild)) {
+          seen.add(grandchild);
+          children.push(grandchild);
+        }
+      }
     }
   }
-  
+
   return children;
 }
 
