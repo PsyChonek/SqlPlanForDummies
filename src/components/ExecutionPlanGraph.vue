@@ -75,10 +75,21 @@ interface TreeNode {
   timePercentage: number;
 }
 
-// Own elapsed time = node's elapsed minus all direct children's elapsed (clamped to 0)
+// Best-effort elapsed for a node: use its own runtimeInfo when available, otherwise fall back
+// to the max of its children's effective elapsed times.  This handles operators like
+// ComputeScalar that sometimes appear without RunTimeInformation in actual plans.
+const getEffectiveElapsedMs = (op: RelOp): number => {
+  if (op.runtimeInfo) return op.runtimeInfo.actualElapsedMs;
+  if (op.children.length === 0) return 0;
+  return Math.max(...op.children.map(getEffectiveElapsedMs));
+};
+
+// Own elapsed time = node's elapsed minus all direct children's effective elapsed (clamped to 0).
+// Using getEffectiveElapsedMs for children ensures nodes without runtimeInfo still contribute
+// their subtree time so the parent's own time is not inflated.
 const getNodeOwnElapsedMs = (op: RelOp): number => {
   const total = op.runtimeInfo?.actualElapsedMs ?? 0;
-  const childrenTotal = op.children.reduce((sum, c) => sum + (c.runtimeInfo?.actualElapsedMs ?? 0), 0);
+  const childrenTotal = op.children.reduce((sum, c) => sum + getEffectiveElapsedMs(c), 0);
   return Math.max(0, total - childrenTotal);
 };
 
@@ -101,9 +112,7 @@ const buildHierarchy = (relOp: RelOp, maxOwnElapsedMs: number): d3.HierarchyNode
   return d3.hierarchy(buildChildren(relOp));
 };
 
-// Node dimensions and spacing (configurable via .env)
-const NODE_WIDTH = Number(import.meta.env.VITE_NODE_WIDTH) || 360;
-const NODE_HEIGHT = Number(import.meta.env.VITE_NODE_HEIGHT) || 155;
+// Node tree spacing (configurable via .env)
 const NODE_MARGIN_X = Number(import.meta.env.VITE_NODE_MARGIN_X) || 10;
 const NODE_MARGIN_Y = Number(import.meta.env.VITE_NODE_MARGIN_Y) || 15;
 
@@ -111,6 +120,36 @@ const NODE_MARGIN_Y = Number(import.meta.env.VITE_NODE_MARGIN_Y) || 15;
 const FONT_SIZE_LABEL = Number(import.meta.env.VITE_FONT_SIZE_LABEL) || 14;
 const FONT_SIZE_SUBTITLE = Number(import.meta.env.VITE_FONT_SIZE_SUBTITLE) || 11;
 const FONT_SIZE_DETAIL = Number(import.meta.env.VITE_FONT_SIZE_DETAIL) || 11;
+
+// Node inner layout — padding, gaps, column offsets (configurable via .env)
+const NL_PAD_X    = Number(import.meta.env.VITE_NODE_PAD_X)    || 15;  // left/right inner padding
+const NL_PAD_TOP  = Number(import.meta.env.VITE_NODE_PAD_TOP)  || 16;  // top padding → label baseline
+const NL_HDR_GAP  = Number(import.meta.env.VITE_NODE_HDR_GAP)  || 17;  // label → subtitle gap
+const NL_SEC_GAP  = Number(import.meta.env.VITE_NODE_SEC_GAP)  || 25;  // subtitle → first data row
+const NL_ROW_GAP  = Number(import.meta.env.VITE_NODE_ROW_GAP)  || 18;  // between data rows
+const NL_COL2_OFF = Number(import.meta.env.VITE_NODE_COL2_OFF) || 110; // x offset: second column
+const NL_COL3_OFF = Number(import.meta.env.VITE_NODE_COL3_OFF) || 200; // x offset: third column
+
+// Derived layout values — computed once from the constants above
+// NODE_HEIGHT is derived so it always fits the content exactly:
+//   top_pad + label + header_gap + section_gap + (data_rows-1)*row_gap + bottom_pad + cost_bar
+const COST_BAR_H = 4;
+const NODE_HEIGHT = NL_PAD_TOP + FONT_SIZE_LABEL + NL_HDR_GAP + NL_SEC_GAP
+                  + 3 * NL_ROW_GAP + NL_PAD_TOP + COST_BAR_H;
+// Width gives col3 the same room as the col2→col3 gap, so spacing is balanced
+const NODE_WIDTH  = NL_PAD_X * 2 + 2 * NL_COL3_OFF - NL_COL2_OFF;
+const NL_TOP   = -NODE_HEIGHT / 2;
+const NL_LEFT  = -NODE_WIDTH  / 2 + NL_PAD_X;
+const NL_COL2  = NL_LEFT + NL_COL2_OFF;
+const NL_COL3  = NL_LEFT + NL_COL3_OFF;
+const Y_LABEL    = NL_TOP + NL_PAD_TOP + FONT_SIZE_LABEL;
+const Y_SUBTITLE = Y_LABEL    + NL_HDR_GAP;
+const Y_COST     = Y_SUBTITLE + NL_SEC_GAP;
+const Y_TIME     = Y_COST     + NL_ROW_GAP;
+const Y_ROWS     = Y_TIME     + NL_ROW_GAP;
+const Y_IO       = Y_ROWS     + NL_ROW_GAP;
+const LABEL_CHARS    = Math.floor((NODE_WIDTH - NL_PAD_X * 2) / 9);
+const SUBTITLE_CHARS = Math.floor((NODE_WIDTH - NL_PAD_X * 2) / 8);
 
 // Colors (configurable via .env)
 const COLOR_NODE_BG = import.meta.env.VITE_COLOR_NODE_BG || '#1e293b';
@@ -507,7 +546,7 @@ const renderGraph = () => {
   // Cost indicator bar (at bottom of node)
   nodes.append('rect')
     .attr('x', -NODE_WIDTH / 2)
-    .attr('y', NODE_HEIGHT / 2 - 4)
+    .attr('y', NODE_HEIGHT / 2 - COST_BAR_H)
     .attr('width', d => {
       const pct = COLOR_MODE === 'time' ? d.data.timePercentage : d.data.costPercentage;
       return Math.max(4, (pct / 100) * NODE_WIDTH);
@@ -522,52 +561,27 @@ const renderGraph = () => {
   // Operator name
   nodes.append('text')
     .attr('class', 'node-label')
-    .attr('x', -NODE_WIDTH / 2 + 15)
-    .attr('y', -36)
+    .attr('x', NL_LEFT)
+    .attr('y', Y_LABEL)
     .attr('font-size', `${FONT_SIZE_LABEL}px`)
     .attr('font-weight', 600)
     .attr('fill', COLOR_TEXT_PRIMARY)
-    .text(d => truncateText(d.data.relOp.physicalOp, Math.floor((NODE_WIDTH - 30) / 9)));
+    .text(d => truncateText(d.data.relOp.physicalOp, LABEL_CHARS));
 
-  // Subtitle — up to two wrapped lines (table.index, join type, etc.)
-  // Always occupies two line slots so rows below stay at fixed y positions.
-  const SUBTITLE_X = -NODE_WIDTH / 2 + 15;
-  // ~8px per char at 11px font (conservative for mixed-case SQL names); scales with node width
-  const SUBTITLE_CHARS = Math.floor((NODE_WIDTH - 30) / 8);
-  const SUBTITLE_LINE_H = 14; // px between baseline of line 1 and line 2
+  // Subtitle — single truncated line (table.index, join type, etc.)
   nodes.append('text')
     .attr('class', 'node-subtitle')
-    .attr('x', SUBTITLE_X)
-    .attr('y', -18)
+    .attr('x', NL_LEFT)
+    .attr('y', Y_SUBTITLE)
     .attr('font-size', `${FONT_SIZE_SUBTITLE}px`)
     .attr('fill', COLOR_TEXT_SECONDARY)
-    .each(function(d) {
-      const subtitle = getNodeSubtitle(d.data.relOp);
-      const el = d3.select(this);
-      if (subtitle.length <= SUBTITLE_CHARS) {
-        // Single line — render as plain text, second slot stays empty
-        el.text(subtitle);
-      } else {
-        // Find a clean break point near the char limit (prefer '.', '_', '-', ' ')
-        // Search up to 20 chars back so we find a separator in CamelCase-heavy names
-        let splitAt = SUBTITLE_CHARS;
-        for (let i = SUBTITLE_CHARS; i > SUBTITLE_CHARS - 20; i--) {
-          if ('._ -'.includes(subtitle[i] ?? '')) { splitAt = i + 1; break; }
-        }
-        el.append('tspan')
-          .attr('x', SUBTITLE_X).attr('dy', 0)
-          .text(truncateText(subtitle.substring(0, splitAt), SUBTITLE_CHARS));
-        el.append('tspan')
-          .attr('x', SUBTITLE_X).attr('dy', SUBTITLE_LINE_H)
-          .text(truncateText(subtitle.substring(splitAt), SUBTITLE_CHARS));
-      }
-    });
+    .text(d => truncateText(getNodeSubtitle(d.data.relOp), SUBTITLE_CHARS));
 
   // Own cost % (CPU+IO relative to whole plan)
   nodes.append('text')
     .attr('class', 'node-cost')
-    .attr('x', -NODE_WIDTH / 2 + 15)
-    .attr('y', 14)
+    .attr('x', NL_LEFT)
+    .attr('y', Y_COST)
     .attr('font-size', `${FONT_SIZE_DETAIL}px`)
     .attr('fill', COLOR_TEXT_SECONDARY)
     .text(d => `Cost: ${d.data.ownCostPercentage.toFixed(1)}%`);
@@ -575,8 +589,8 @@ const renderGraph = () => {
   // Subtree cost % (accumulated)
   nodes.append('text')
     .attr('class', 'node-subtree-cost')
-    .attr('x', -NODE_WIDTH / 2 + 125)
-    .attr('y', 14)
+    .attr('x', NL_COL2)
+    .attr('y', Y_COST)
     .attr('font-size', `${FONT_SIZE_DETAIL}px`)
     .attr('fill', COLOR_TEXT_MUTED)
     .text(d => `Sub: ${d.data.costPercentage.toFixed(1)}%`);
@@ -584,8 +598,8 @@ const renderGraph = () => {
   // Own time (node only, excluding children)
   nodes.append('text')
     .attr('class', 'node-time')
-    .attr('x', -NODE_WIDTH / 2 + 15)
-    .attr('y', 28)
+    .attr('x', NL_LEFT)
+    .attr('y', Y_TIME)
     .attr('font-size', `${FONT_SIZE_DETAIL}px`)
     .attr('fill', COLOR_TEXT_SECONDARY)
     .text(d => {
@@ -596,8 +610,8 @@ const renderGraph = () => {
   // Subtree total time
   nodes.append('text')
     .attr('class', 'node-time-sub')
-    .attr('x', -NODE_WIDTH / 2 + 125)
-    .attr('y', 28)
+    .attr('x', NL_COL2)
+    .attr('y', Y_TIME)
     .attr('font-size', `${FONT_SIZE_DETAIL}px`)
     .attr('fill', COLOR_TEXT_MUTED)
     .text(d => {
@@ -608,8 +622,8 @@ const renderGraph = () => {
   // Rows
   nodes.append('text')
     .attr('class', 'node-rows')
-    .attr('x', -NODE_WIDTH / 2 + 15)
-    .attr('y', 42)
+    .attr('x', NL_LEFT)
+    .attr('y', Y_ROWS)
     .attr('font-size', `${FONT_SIZE_DETAIL}px`)
     .attr('fill', COLOR_TEXT_MUTED)
     .text(d => `Rows: ${formatRows(d.data.relOp.estimateRows)}`);
@@ -617,8 +631,8 @@ const renderGraph = () => {
   // IO: logical reads (left)
   nodes.append('text')
     .attr('class', 'node-io')
-    .attr('x', -NODE_WIDTH / 2 + 15)
-    .attr('y', 56)
+    .attr('x', NL_LEFT)
+    .attr('y', Y_IO)
     .attr('font-size', `${FONT_SIZE_DETAIL}px`)
     .attr('fill', COLOR_TEXT_MUTED)
     .text(d => {
@@ -635,8 +649,8 @@ const renderGraph = () => {
   // Top wait (right of IO row) — amber for regular waits, red for lock waits
   nodes.append('text')
     .attr('class', 'node-wait')
-    .attr('x', -NODE_WIDTH / 2 + 215)
-    .attr('y', 56)
+    .attr('x', NL_COL3)
+    .attr('y', Y_IO)
     .attr('font-size', `${FONT_SIZE_DETAIL}px`)
     .attr('fill', d => {
       const topWait = d.data.relOp.runtimeInfo?.waitStats?.[0];
@@ -652,7 +666,7 @@ const renderGraph = () => {
   // Lock warning badge (top-right corner) — red circle with "!" when lock waits exist
   const lockBadgeG = nodes.append('g')
     .attr('class', 'node-lock-badge')
-    .attr('transform', `translate(${NODE_WIDTH / 2 - 14}, ${-NODE_HEIGHT / 2 + 14})`)
+    .attr('transform', `translate(${NODE_WIDTH / 2 - NL_PAD_X}, ${NL_TOP + NL_PAD_X})`)
     .attr('visibility', d => hasLockWait(d.data.relOp) ? 'visible' : 'hidden');
 
   lockBadgeG.append('circle')

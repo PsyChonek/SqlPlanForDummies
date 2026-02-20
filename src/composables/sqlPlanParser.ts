@@ -180,32 +180,26 @@ function parseRelOp(relOpEl: Element): RelOp {
 
 /**
  * Find all direct child RelOp elements (they can be nested in operation-specific elements).
- * Scans all child elements generically so operator types like Extension (UDX/FOR JSON),
- * Spool, NestedLoops, etc. are all handled without maintaining a hardcoded list.
+ * Recursively descends into non-RelOp wrapper elements (NestedLoops, Filter, Predicate,
+ * Subquery, etc.) but stops at each RelOp boundary — so only the immediate child operators
+ * are returned, not their descendants.  This handles arbitrary nesting depths such as
+ * Filter > Predicate > ScalarOperator > Subquery > RelOp.
  */
 function findChildRelOps(parentEl: Element): Element[] {
-  const seen = new Set<Element>();
   const children: Element[] = [];
 
-  for (const child of parentEl.children) {
-    if (child.localName === 'RelOp') {
-      // Direct RelOp child
-      if (!seen.has(child)) {
-        seen.add(child);
+  function search(el: Element) {
+    for (const child of el.children) {
+      if (child.localName === 'RelOp') {
         children.push(child);
-      }
-    } else {
-      // Operator-specific wrapper element (NestedLoops, Extension, Spool, etc.)
-      // RelOp children live one level inside these wrappers.
-      for (const grandchild of child.children) {
-        if (grandchild.localName === 'RelOp' && !seen.has(grandchild)) {
-          seen.add(grandchild);
-          children.push(grandchild);
-        }
+        // Stop here — this RelOp's own children belong to its subtree.
+      } else {
+        search(child);
       }
     }
   }
 
+  search(parentEl);
   return children;
 }
 
