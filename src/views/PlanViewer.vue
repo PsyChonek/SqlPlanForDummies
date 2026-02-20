@@ -32,28 +32,6 @@ const handleComparisonFile = async (event: Event) => {
 
 <template>
   <div class="flex flex-col h-full overflow-hidden">
-    <!-- Comparison controls -->
-    <div class="flex items-center justify-end px-4 py-2 bg-slate-800/50 border-b border-slate-700">
-      <input
-        ref="comparisonFileInput"
-        type="file"
-        accept=".sqlplan,.xml"
-        class="hidden"
-        @change="handleComparisonFile"
-      />
-      <button
-        v-if="state.plan"
-        class="px-3 py-1.5 rounded-lg text-sm flex items-center gap-2 transition-colors"
-        :class="state.comparisonMode
-          ? 'bg-blue-600 text-white hover:bg-blue-500'
-          : 'bg-slate-700 hover:bg-slate-600 text-slate-300'"
-        @click="state.comparisonPlan ? toggleComparisonMode() : openComparisonFilePicker()"
-      >
-        <i class="fa-solid fa-code-compare"></i>
-        {{ state.comparisonMode ? 'Hide Compare' : 'Compare Plans' }}
-      </button>
-    </div>
-
     <!-- Main Grid -->
     <div
       class="flex-1 gap-4 p-4 overflow-hidden grid grid-cols-[320px_1fr_380px] grid-rows-[1fr]"
@@ -96,6 +74,26 @@ const handleComparisonFile = async (event: Event) => {
               {{ analysisPanelRef.issueCount }}
             </span>
           </button>
+          <div class="ml-auto px-3">
+            <input
+              ref="comparisonFileInput"
+              type="file"
+              accept=".sqlplan,.xml"
+              class="hidden"
+              @change="handleComparisonFile"
+            />
+            <button
+              v-if="state.plan"
+              class="px-3 py-1.5 rounded-lg text-sm flex items-center gap-2 transition-colors"
+              :class="state.comparisonMode
+                ? 'bg-blue-600 text-white hover:bg-blue-500'
+                : 'bg-slate-600 hover:bg-slate-500 text-slate-300'"
+              @click="state.comparisonPlan ? toggleComparisonMode() : openComparisonFilePicker()"
+            >
+              <i class="fa-solid fa-code-compare"></i>
+              {{ state.comparisonMode ? 'Hide Compare' : 'Compare Plans' }}
+            </button>
+          </div>
         </div>
 
         <!-- Tab content -->

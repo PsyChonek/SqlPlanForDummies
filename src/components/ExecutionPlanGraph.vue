@@ -12,6 +12,7 @@ const {
   selectNode,
   selectEdge,
   getNodeCostPercentage,
+  getNodeOwnCostPercentage,
   navigateToParent,
   navigateToFirstChild,
   navigateToSibling,
@@ -69,6 +70,7 @@ const zoomFit = () => {
 interface TreeNode {
   relOp: RelOp;
   costPercentage: number;
+  ownCostPercentage: number;
 }
 
 // Convert RelOp tree to D3 hierarchy format
@@ -76,6 +78,7 @@ const buildHierarchy = (relOp: RelOp): d3.HierarchyNode<TreeNode> => {
   const toTreeNode = (op: RelOp): TreeNode => ({
     relOp: op,
     costPercentage: getNodeCostPercentage(op),
+    ownCostPercentage: getNodeOwnCostPercentage(op),
   });
 
   const buildChildren = (op: RelOp): any => ({
@@ -87,8 +90,8 @@ const buildHierarchy = (relOp: RelOp): d3.HierarchyNode<TreeNode> => {
 };
 
 // Node dimensions and spacing (configurable via .env)
-const NODE_WIDTH = Number(import.meta.env.VITE_NODE_WIDTH) || 280;
-const NODE_HEIGHT = Number(import.meta.env.VITE_NODE_HEIGHT) || 100;
+const NODE_WIDTH = Number(import.meta.env.VITE_NODE_WIDTH) || 360;
+const NODE_HEIGHT = Number(import.meta.env.VITE_NODE_HEIGHT) || 155;
 const NODE_MARGIN_X = Number(import.meta.env.VITE_NODE_MARGIN_X) || 10;
 const NODE_MARGIN_Y = Number(import.meta.env.VITE_NODE_MARGIN_Y) || 15;
 
@@ -111,6 +114,26 @@ const COLOR_LINK = import.meta.env.VITE_COLOR_LINK || '#475569';
 const EDGE_MIN_THICKNESS = Number(import.meta.env.VITE_EDGE_MIN_THICKNESS) || 2;
 const EDGE_MAX_THICKNESS = Number(import.meta.env.VITE_EDGE_MAX_THICKNESS) || 12;
 const SHOW_EDGE_LABELS = import.meta.env.VITE_SHOW_EDGE_LABELS === 'true';
+
+// Abbreviate verbose wait type names to fit in a node
+const abbreviateWaitType = (waitType: string): string => {
+  if (waitType.startsWith('LCK_M_')) return `Lock(${waitType.slice(6)})`;
+  if (waitType.startsWith('PAGEIOLATCH_')) return `PAGEIO(${waitType.slice(12)})`;
+  if (waitType.startsWith('LATCH_')) return `Latch(${waitType.slice(6)})`;
+  const abbrevs: Record<string, string> = {
+    SOS_SCHEDULER_YIELD: 'CPU Yield',
+    WRITELOG: 'WriteLog',
+    ASYNC_IO_COMPLETION: 'AsyncIO',
+    IO_COMPLETION: 'IO',
+    NETWORK_IO: 'Net IO',
+    SLEEP: 'Sleep',
+  };
+  return abbrevs[waitType] ?? waitType;
+};
+
+// Returns true if any wait is a lock wait (LCK_M_*)
+const hasLockWait = (relOp: RelOp): boolean =>
+  relOp.runtimeInfo?.waitStats?.some(w => w.waitType.startsWith('LCK_M_')) ?? false;
 
 // Get a short subtitle for a node based on its operation details
 const getNodeSubtitle = (relOp: RelOp): string => {
@@ -475,34 +498,68 @@ const renderGraph = () => {
   nodes.append('text')
     .attr('class', 'node-label')
     .attr('x', -NODE_WIDTH / 2 + 15)
-    .attr('y', -22)
+    .attr('y', -36)
     .attr('font-size', `${FONT_SIZE_LABEL}px`)
     .attr('font-weight', 600)
     .attr('fill', COLOR_TEXT_PRIMARY)
-    .text(d => truncateText(d.data.relOp.physicalOp, 28));
+    .text(d => truncateText(d.data.relOp.physicalOp, Math.floor((NODE_WIDTH - 30) / 9)));
 
-  // Subtitle (operation details: table, index, join type, etc.)
+  // Subtitle — up to two wrapped lines (table.index, join type, etc.)
+  // Always occupies two line slots so rows below stay at fixed y positions.
+  const SUBTITLE_X = -NODE_WIDTH / 2 + 15;
+  // ~8px per char at 11px font (conservative for mixed-case SQL names); scales with node width
+  const SUBTITLE_CHARS = Math.floor((NODE_WIDTH - 30) / 8);
+  const SUBTITLE_LINE_H = 14; // px between baseline of line 1 and line 2
   nodes.append('text')
     .attr('class', 'node-subtitle')
-    .attr('x', -NODE_WIDTH / 2 + 15)
-    .attr('y', -4)
+    .attr('x', SUBTITLE_X)
+    .attr('y', -18)
     .attr('font-size', `${FONT_SIZE_SUBTITLE}px`)
     .attr('fill', COLOR_TEXT_SECONDARY)
-    .text(d => truncateText(getNodeSubtitle(d.data.relOp), 35));
+    .each(function(d) {
+      const subtitle = getNodeSubtitle(d.data.relOp);
+      const el = d3.select(this);
+      if (subtitle.length <= SUBTITLE_CHARS) {
+        // Single line — render as plain text, second slot stays empty
+        el.text(subtitle);
+      } else {
+        // Find a clean break point near the char limit (prefer '.', '_', '-', ' ')
+        // Search up to 20 chars back so we find a separator in CamelCase-heavy names
+        let splitAt = SUBTITLE_CHARS;
+        for (let i = SUBTITLE_CHARS; i > SUBTITLE_CHARS - 20; i--) {
+          if ('._ -'.includes(subtitle[i] ?? '')) { splitAt = i + 1; break; }
+        }
+        el.append('tspan')
+          .attr('x', SUBTITLE_X).attr('dy', 0)
+          .text(truncateText(subtitle.substring(0, splitAt), SUBTITLE_CHARS));
+        el.append('tspan')
+          .attr('x', SUBTITLE_X).attr('dy', SUBTITLE_LINE_H)
+          .text(truncateText(subtitle.substring(splitAt), SUBTITLE_CHARS));
+      }
+    });
 
-  // Cost percentage
+  // Own cost % (CPU+IO relative to whole plan)
   nodes.append('text')
     .attr('class', 'node-cost')
     .attr('x', -NODE_WIDTH / 2 + 15)
     .attr('y', 16)
     .attr('font-size', `${FONT_SIZE_DETAIL}px`)
     .attr('fill', COLOR_TEXT_SECONDARY)
-    .text(d => `Cost: ${d.data.costPercentage.toFixed(1)}%`);
+    .text(d => `Cost: ${d.data.ownCostPercentage.toFixed(1)}%`);
+
+  // Subtree cost % (accumulated)
+  nodes.append('text')
+    .attr('class', 'node-subtree-cost')
+    .attr('x', -NODE_WIDTH / 2 + 125)
+    .attr('y', 16)
+    .attr('font-size', `${FONT_SIZE_DETAIL}px`)
+    .attr('fill', COLOR_TEXT_MUTED)
+    .text(d => `Sub: ${d.data.costPercentage.toFixed(1)}%`);
 
   // Time (if available)
   nodes.append('text')
     .attr('class', 'node-time')
-    .attr('x', -NODE_WIDTH / 2 + 120)
+    .attr('x', -NODE_WIDTH / 2 + 245)
     .attr('y', 16)
     .attr('font-size', `${FONT_SIZE_DETAIL}px`)
     .attr('fill', COLOR_TEXT_SECONDARY)
@@ -515,10 +572,65 @@ const renderGraph = () => {
   nodes.append('text')
     .attr('class', 'node-rows')
     .attr('x', -NODE_WIDTH / 2 + 15)
-    .attr('y', 34)
+    .attr('y', 36)
     .attr('font-size', `${FONT_SIZE_DETAIL}px`)
     .attr('fill', COLOR_TEXT_MUTED)
     .text(d => `Rows: ${formatRows(d.data.relOp.estimateRows)}`);
+
+  // IO: logical reads (left)
+  nodes.append('text')
+    .attr('class', 'node-io')
+    .attr('x', -NODE_WIDTH / 2 + 15)
+    .attr('y', 56)
+    .attr('font-size', `${FONT_SIZE_DETAIL}px`)
+    .attr('fill', COLOR_TEXT_MUTED)
+    .text(d => {
+      const rt = d.data.relOp.runtimeInfo;
+      if (!rt) return '';
+      const lr = rt.actualLogicalReads ?? 0;
+      const pr = rt.actualPhysicalReads ?? 0;
+      if (lr === 0 && pr === 0) return '';
+      const parts = [`LR: ${formatRows(lr)}`];
+      if (pr > 0) parts.push(`PR: ${formatRows(pr)}`);
+      return parts.join('  ');
+    });
+
+  // Top wait (right of IO row) — amber for regular waits, red for lock waits
+  nodes.append('text')
+    .attr('class', 'node-wait')
+    .attr('x', -NODE_WIDTH / 2 + 215)
+    .attr('y', 56)
+    .attr('font-size', `${FONT_SIZE_DETAIL}px`)
+    .attr('fill', d => {
+      const topWait = d.data.relOp.runtimeInfo?.waitStats?.[0];
+      if (!topWait) return COLOR_TEXT_MUTED;
+      return topWait.waitType.startsWith('LCK_M_') ? '#ef4444' : '#f59e0b';
+    })
+    .text(d => {
+      const topWait = d.data.relOp.runtimeInfo?.waitStats?.[0];
+      if (!topWait) return '';
+      return abbreviateWaitType(topWait.waitType);
+    });
+
+  // Lock warning badge (top-right corner) — red circle with "!" when lock waits exist
+  const lockBadgeG = nodes.append('g')
+    .attr('class', 'node-lock-badge')
+    .attr('transform', `translate(${NODE_WIDTH / 2 - 14}, ${-NODE_HEIGHT / 2 + 14})`)
+    .attr('visibility', d => hasLockWait(d.data.relOp) ? 'visible' : 'hidden');
+
+  lockBadgeG.append('circle')
+    .attr('r', 9)
+    .attr('fill', '#ef4444')
+    .attr('stroke', '#1e293b')
+    .attr('stroke-width', 1.5);
+
+  lockBadgeG.append('text')
+    .attr('text-anchor', 'middle')
+    .attr('dominant-baseline', 'central')
+    .attr('font-size', '10px')
+    .attr('font-weight', 700)
+    .attr('fill', '#ffffff')
+    .text('🔒');
 
   // Raise tooltip and hit-areas above nodes so they render on top
   hitAreaGroup.raise();
@@ -579,9 +691,21 @@ watch(() => state.selectedNode, () => {
   currentContentGroup.selectAll('.nodes g .node-subtitle, .nodes g .node-cost, .nodes g .node-time')
     .attr('fill', (d: any) => isSelected(d) ? COLOR_TEXT_SELECTED_DIM : COLOR_TEXT_SECONDARY);
 
-  // Rows
-  currentContentGroup.selectAll('.nodes g .node-rows')
+  // Subtree cost (dimmer when not selected)
+  currentContentGroup.selectAll('.nodes g .node-subtree-cost')
     .attr('fill', (d: any) => isSelected(d) ? COLOR_TEXT_SELECTED_DIM : COLOR_TEXT_MUTED);
+
+  // Rows, IO
+  currentContentGroup.selectAll('.nodes g .node-rows, .nodes g .node-io')
+    .attr('fill', (d: any) => isSelected(d) ? COLOR_TEXT_SELECTED_DIM : COLOR_TEXT_MUTED);
+
+  // Wait label — keep severity color (red/amber) even when selected
+  currentContentGroup.selectAll('.nodes g .node-wait')
+    .attr('fill', (d: any) => {
+      const topWait = d.data.relOp.runtimeInfo?.waitStats?.[0];
+      if (!topWait) return isSelected(d) ? COLOR_TEXT_SELECTED_DIM : COLOR_TEXT_MUTED;
+      return topWait.waitType.startsWith('LCK_M_') ? '#ef4444' : '#f59e0b';
+    });
 });
 
 watch(() => state.selectedEdge, () => {

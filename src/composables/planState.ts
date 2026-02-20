@@ -171,10 +171,16 @@ export const usePlanState = () => {
     return result;
   });
 
-  // Get cost percentage for a node
+  // Get subtree cost percentage for a node (accumulated, used for severity coloring)
   const getNodeCostPercentage = (node: RelOp): number => {
     if (totalCost.value === 0) return 0;
     return (node.estimatedTotalSubtreeCost / totalCost.value) * 100;
+  };
+
+  // Get own cost percentage for a node (CPU + IO only, relative to whole plan)
+  const getNodeOwnCostPercentage = (node: RelOp): number => {
+    if (totalCost.value === 0) return 0;
+    return ((node.estimateCPU + node.estimateIO) / totalCost.value) * 100;
   };
 
   // Keyboard navigation helpers
@@ -256,6 +262,7 @@ export const usePlanState = () => {
     
     // Utilities
     getNodeCostPercentage,
+    getNodeOwnCostPercentage,
     
     // Navigation
     navigateToParent,

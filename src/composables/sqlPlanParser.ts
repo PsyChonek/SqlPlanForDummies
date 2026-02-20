@@ -10,6 +10,7 @@ import type {
   QueryPlan,
   RelOp,
   RuntimeInfo,
+  WaitStat,
   ColumnReference,
   OperationDetails,
   IndexScanDetails,
@@ -244,16 +245,19 @@ function parseColumnReference(colRef: Element): ColumnReference {
 function parseRuntimeInfo(relOpEl: Element): RuntimeInfo | undefined {
   const runtimeEl = getChildElement(relOpEl, 'RunTimeInformation');
   if (!runtimeEl) return undefined;
-  
+
   const counterEl = getChildElement(runtimeEl, 'RunTimeCountersPerThread');
   if (!counterEl) return undefined;
-  
+
+  // WaitStats can appear as child of RunTimeCountersPerThread or RunTimeInformation
+  const waitStatsEl = getChildElement(counterEl, 'WaitStats') ?? getChildElement(runtimeEl, 'WaitStats');
+
   return {
     threadId: parseInt(counterEl.getAttribute('Thread') || '0', 10),
     actualRows: parseInt(counterEl.getAttribute('ActualRows') || '0', 10),
     actualRowsRead: parseInt(counterEl.getAttribute('ActualRowsRead') || '0', 10) || undefined,
     actualExecutions: parseInt(counterEl.getAttribute('ActualExecutions') || '0', 10),
-    
+
     attributes: collectAttributes(counterEl),
 
     actualEndOfScans: parseInt(counterEl.getAttribute('ActualEndOfScans') || '0', 10) || undefined,
@@ -268,7 +272,27 @@ function parseRuntimeInfo(relOpEl: Element): RuntimeInfo | undefined {
     actualLobReadAheads: parseInt(counterEl.getAttribute('ActualLobReadAheads') || '0', 10) || undefined,
     batches: parseInt(counterEl.getAttribute('Batches') || '0', 10) || undefined,
     executionMode: (counterEl.getAttribute('ActualExecutionMode') as 'Row' | 'Batch') || undefined,
+    waitStats: waitStatsEl ? parseWaitStats(waitStatsEl) : undefined,
   };
+}
+
+/**
+ * Parse WaitStats element
+ */
+function parseWaitStats(waitStatsEl: Element): WaitStat[] {
+  const waits: WaitStat[] = [];
+  for (const waitEl of getChildElements(waitStatsEl, 'Wait')) {
+    const waitTimeMs = parseFloat(waitEl.getAttribute('WaitTimeMs') || '0');
+    if (waitTimeMs > 0) {
+      waits.push({
+        waitType: waitEl.getAttribute('WaitType') || '',
+        waitTimeMs,
+        waitCount: parseInt(waitEl.getAttribute('WaitCount') || '0', 10),
+      });
+    }
+  }
+  // Sort descending by wait time so the top wait is first
+  return waits.sort((a, b) => b.waitTimeMs - a.waitTimeMs);
 }
 
 /**

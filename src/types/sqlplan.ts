@@ -84,15 +84,21 @@ export interface RelOp {
   operationDetails: OperationDetails;
 }
 
+export interface WaitStat {
+  waitType: string;
+  waitTimeMs: number;
+  waitCount: number;
+}
+
 export interface RuntimeInfo {
   threadId: number;
   actualRows: number;
   actualRowsRead?: number;
   actualExecutions: number;
-  
+
   // Generic attributes
   attributes?: Record<string, string>;
-  
+
   actualEndOfScans?: number;
   actualElapsedMs: number;
   actualCPUMs: number;
@@ -105,6 +111,7 @@ export interface RuntimeInfo {
   actualLobReadAheads?: number;
   batches?: number;
   executionMode?: 'Row' | 'Batch';
+  waitStats?: WaitStat[];
 }
 
 export interface ColumnReference {
