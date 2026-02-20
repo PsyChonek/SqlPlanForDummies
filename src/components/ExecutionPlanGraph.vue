@@ -13,6 +13,7 @@ const {
   selectEdge,
   getNodeCostPercentage,
   getNodeOwnCostPercentage,
+  allNodes,
   navigateToParent,
   navigateToFirstChild,
   navigateToSibling,
@@ -71,14 +72,25 @@ interface TreeNode {
   relOp: RelOp;
   costPercentage: number;
   ownCostPercentage: number;
+  timePercentage: number;
 }
 
+// Own elapsed time = node's elapsed minus all direct children's elapsed (clamped to 0)
+const getNodeOwnElapsedMs = (op: RelOp): number => {
+  const total = op.runtimeInfo?.actualElapsedMs ?? 0;
+  const childrenTotal = op.children.reduce((sum, c) => sum + (c.runtimeInfo?.actualElapsedMs ?? 0), 0);
+  return Math.max(0, total - childrenTotal);
+};
+
 // Convert RelOp tree to D3 hierarchy format
-const buildHierarchy = (relOp: RelOp): d3.HierarchyNode<TreeNode> => {
+const buildHierarchy = (relOp: RelOp, maxOwnElapsedMs: number): d3.HierarchyNode<TreeNode> => {
   const toTreeNode = (op: RelOp): TreeNode => ({
     relOp: op,
     costPercentage: getNodeCostPercentage(op),
     ownCostPercentage: getNodeOwnCostPercentage(op),
+    timePercentage: maxOwnElapsedMs > 0
+      ? (getNodeOwnElapsedMs(op) / maxOwnElapsedMs) * 100
+      : 0,
   });
 
   const buildChildren = (op: RelOp): any => ({
@@ -114,6 +126,9 @@ const COLOR_LINK = import.meta.env.VITE_COLOR_LINK || '#475569';
 const EDGE_MIN_THICKNESS = Number(import.meta.env.VITE_EDGE_MIN_THICKNESS) || 2;
 const EDGE_MAX_THICKNESS = Number(import.meta.env.VITE_EDGE_MAX_THICKNESS) || 12;
 const SHOW_EDGE_LABELS = import.meta.env.VITE_SHOW_EDGE_LABELS === 'true';
+
+// Color mode: 'cost' (default) or 'time' (actual elapsed ms)
+const COLOR_MODE = import.meta.env.VITE_COLOR_MODE || 'cost';
 
 // Abbreviate verbose wait type names to fit in a node
 const abbreviateWaitType = (waitType: string): string => {
@@ -172,7 +187,8 @@ const renderGraph = () => {
   d3.select(viewport.value).selectAll('svg').remove();
 
   const relOp = state.selectedStatement.queryPlan.relOp;
-  const root = buildHierarchy(relOp);
+  const maxOwnElapsedMs = Math.max(0, ...allNodes.value.map(n => getNodeOwnElapsedMs(n)));
+  const root = buildHierarchy(relOp, maxOwnElapsedMs);
 
   // Create SVG (full viewport, zoom handles the rest)
   const svg = d3.select(viewport.value)
@@ -482,16 +498,25 @@ const renderGraph = () => {
         ? COLOR_NODE_SELECTED
         : COLOR_NODE_BG;
     })
-    .attr('stroke', d => getCostColor(getCostSeverity(d.data.costPercentage)))
+    .attr('stroke', d => {
+      const pct = COLOR_MODE === 'time' ? d.data.timePercentage : d.data.costPercentage;
+      return getCostColor(getCostSeverity(pct));
+    })
     .attr('stroke-width', d => d.data.relOp.nodeId === state.selectedNode?.nodeId ? 3 : 2);
 
   // Cost indicator bar (at bottom of node)
   nodes.append('rect')
     .attr('x', -NODE_WIDTH / 2)
     .attr('y', NODE_HEIGHT / 2 - 4)
-    .attr('width', d => Math.max(4, (d.data.costPercentage / 100) * NODE_WIDTH))
+    .attr('width', d => {
+      const pct = COLOR_MODE === 'time' ? d.data.timePercentage : d.data.costPercentage;
+      return Math.max(4, (pct / 100) * NODE_WIDTH);
+    })
     .attr('height', 4)
-    .attr('fill', d => getCostColor(getCostSeverity(d.data.costPercentage)))
+    .attr('fill', d => {
+      const pct = COLOR_MODE === 'time' ? d.data.timePercentage : d.data.costPercentage;
+      return getCostColor(getCostSeverity(pct));
+    })
     .attr('rx', 2);
 
   // Operator name
@@ -542,7 +567,7 @@ const renderGraph = () => {
   nodes.append('text')
     .attr('class', 'node-cost')
     .attr('x', -NODE_WIDTH / 2 + 15)
-    .attr('y', 16)
+    .attr('y', 14)
     .attr('font-size', `${FONT_SIZE_DETAIL}px`)
     .attr('fill', COLOR_TEXT_SECONDARY)
     .text(d => `Cost: ${d.data.ownCostPercentage.toFixed(1)}%`);
@@ -551,28 +576,40 @@ const renderGraph = () => {
   nodes.append('text')
     .attr('class', 'node-subtree-cost')
     .attr('x', -NODE_WIDTH / 2 + 125)
-    .attr('y', 16)
+    .attr('y', 14)
     .attr('font-size', `${FONT_SIZE_DETAIL}px`)
     .attr('fill', COLOR_TEXT_MUTED)
     .text(d => `Sub: ${d.data.costPercentage.toFixed(1)}%`);
 
-  // Time (if available)
+  // Own time (node only, excluding children)
   nodes.append('text')
     .attr('class', 'node-time')
-    .attr('x', -NODE_WIDTH / 2 + 245)
-    .attr('y', 16)
+    .attr('x', -NODE_WIDTH / 2 + 15)
+    .attr('y', 28)
     .attr('font-size', `${FONT_SIZE_DETAIL}px`)
     .attr('fill', COLOR_TEXT_SECONDARY)
     .text(d => {
-      const time = d.data.relOp.runtimeInfo?.actualElapsedMs;
-      return time !== undefined ? formatTime(time) : '';
+      const own = getNodeOwnElapsedMs(d.data.relOp);
+      return d.data.relOp.runtimeInfo ? `Time: ${formatTime(own)}` : '';
+    });
+
+  // Subtree total time
+  nodes.append('text')
+    .attr('class', 'node-time-sub')
+    .attr('x', -NODE_WIDTH / 2 + 125)
+    .attr('y', 28)
+    .attr('font-size', `${FONT_SIZE_DETAIL}px`)
+    .attr('fill', COLOR_TEXT_MUTED)
+    .text(d => {
+      const sub = d.data.relOp.runtimeInfo?.actualElapsedMs;
+      return sub !== undefined ? `Sub: ${formatTime(sub)}` : '';
     });
 
   // Rows
   nodes.append('text')
     .attr('class', 'node-rows')
     .attr('x', -NODE_WIDTH / 2 + 15)
-    .attr('y', 36)
+    .attr('y', 42)
     .attr('font-size', `${FONT_SIZE_DETAIL}px`)
     .attr('fill', COLOR_TEXT_MUTED)
     .text(d => `Rows: ${formatRows(d.data.relOp.estimateRows)}`);
