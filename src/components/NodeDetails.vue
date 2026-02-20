@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { usePlanState } from '../composables/planState';
-import { 
-  getOperatorIcon, 
-  getCostSeverity, 
-  getCostColor, 
-  formatTime, 
+import {
+  getOperatorIcon,
+  getCostSeverity,
+  getCostColor,
+  formatTime,
   formatRows
 } from '../types/sqlplan';
 
@@ -13,6 +13,10 @@ const { state, getNodeCostPercentage } = usePlanState();
 
 const selectedNode = computed(() => state.selectedNode);
 const selectedEdge = computed(() => state.selectedEdge);
+
+const searchTerm = ref('');
+
+watch(selectedNode, () => { searchTerm.value = ''; });
 
 // Edge metrics for data flow display
 const edgeMetrics = computed(() => {
@@ -249,6 +253,32 @@ const formattedProperties = computed(() => {
 
   return processObject(selectedNode.value);
 });
+
+const filteredProperties = computed(() => {
+  const term = searchTerm.value.trim().toLowerCase();
+  if (!term) return formattedProperties.value;
+  return formattedProperties.value.filter(
+    prop => prop.key.toLowerCase().includes(term) || String(prop.value).toLowerCase().includes(term)
+  );
+});
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function highlightText(text: string, term: string): string {
+  const escaped = escapeHtml(text);
+  if (!term.trim()) return escaped;
+  const escapedTerm = escapeHtml(term).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return escaped.replace(
+    new RegExp(escapedTerm, 'gi'),
+    match => `<mark class="bg-yellow-400/40 text-yellow-100 rounded px-px">${match}</mark>`
+  );
+}
 </script>
 
 <template>
@@ -432,19 +462,41 @@ const formattedProperties = computed(() => {
 
       <!-- All Properties (Dynamic) -->
       <div class="bg-slate-700/50 rounded-xl p-4 mt-4">
-        <h5 class="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-3 block">
+        <div class="flex items-center gap-2 mb-3">
           <i class="fa-solid fa-list-ul text-indigo-400"></i>
-          All Properties
-        </h5>
-        <div class="space-y-1 overflow-x-auto">
-          <div 
-            v-for="prop in formattedProperties" 
+          <h5 class="text-sm font-semibold text-slate-300 flex-1">All Properties</h5>
+          <span v-if="searchTerm" class="text-xs text-slate-500">{{ filteredProperties.length }} / {{ formattedProperties.length }}</span>
+        </div>
+        <!-- Search Input -->
+        <div class="relative mb-3">
+          <i class="fa-solid fa-magnifying-glass absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs pointer-events-none"></i>
+          <input
+            v-model="searchTerm"
+            type="text"
+            placeholder="Search properties..."
+            class="w-full bg-slate-600/60 border border-slate-500/50 rounded-lg pl-7 pr-7 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-400/70 focus:ring-1 focus:ring-indigo-400/30"
+          />
+          <button
+            v-if="searchTerm"
+            @click="searchTerm = ''"
+            class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 text-xs"
+            aria-label="Clear search"
+          >
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+        <div v-if="filteredProperties.length > 0" class="space-y-1 overflow-x-auto">
+          <div
+            v-for="prop in filteredProperties"
             :key="prop.key"
             class="grid grid-cols-[1fr_2fr] gap-2 text-xs border-b border-slate-600/50 py-1 hover:bg-slate-600/30"
           >
-            <span class="text-slate-400 font-mono break-all">{{ prop.key }}</span>
-            <span class="text-slate-200 font-mono break-all">{{ prop.value }}</span>
+            <span class="text-slate-400 font-mono break-all" v-html="highlightText(prop.key, searchTerm)"></span>
+            <span class="text-slate-200 font-mono break-all" v-html="highlightText(String(prop.value), searchTerm)"></span>
           </div>
+        </div>
+        <div v-else class="text-xs text-slate-500 text-center py-3">
+          No properties match "{{ searchTerm }}"
         </div>
       </div>
     </div>
