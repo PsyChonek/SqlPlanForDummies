@@ -65,97 +65,6 @@ const zoomFit = () => {
   }
 };
 
-// Export functions
-const exportToSvg = () => {
-  if (!currentSvg) return;
-  
-  const svgElement = currentSvg.node();
-  if (!svgElement) return;
-  
-  // Clone the SVG to avoid modifying the original
-  const clonedSvg = svgElement.cloneNode(true) as SVGSVGElement;
-  
-  // Add inline styles for export
-  const styleElement = document.createElementNS('http://www.w3.org/2000/svg', 'style');
-  styleElement.textContent = `
-    text { font-family: system-ui, -apple-system, sans-serif; }
-    .node rect { stroke-width: 2; }
-    .link { fill: none; stroke-opacity: 0.5; }
-  `;
-  clonedSvg.insertBefore(styleElement, clonedSvg.firstChild);
-  
-  const serializer = new XMLSerializer();
-  const svgString = serializer.serializeToString(clonedSvg);
-  const blob = new Blob([svgString], { type: 'image/svg+xml' });
-  const url = URL.createObjectURL(blob);
-  
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `execution-plan-${Date.now()}.svg`;
-  a.click();
-  
-  URL.revokeObjectURL(url);
-};
-
-const exportToPng = () => {
-  if (!currentSvg || !viewport.value) return;
-  
-  const svgElement = currentSvg.node();
-  if (!svgElement) return;
-  
-  // Clone and prepare SVG
-  const clonedSvg = svgElement.cloneNode(true) as SVGSVGElement;
-  
-  // Add inline styles
-  const styleElement = document.createElementNS('http://www.w3.org/2000/svg', 'style');
-  styleElement.textContent = `
-    text { font-family: system-ui, -apple-system, sans-serif; }
-    .node rect { stroke-width: 2; }
-    .link { fill: none; stroke-opacity: 0.5; }
-  `;
-  clonedSvg.insertBefore(styleElement, clonedSvg.firstChild);
-  
-  // Set explicit dimensions
-  const width = viewport.value.clientWidth;
-  const height = viewport.value.clientHeight;
-  clonedSvg.setAttribute('width', String(width));
-  clonedSvg.setAttribute('height', String(height));
-  
-  const serializer = new XMLSerializer();
-  const svgString = serializer.serializeToString(clonedSvg);
-  const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
-  const url = URL.createObjectURL(svgBlob);
-  
-  const img = new Image();
-  img.onload = () => {
-    const canvas = document.createElement('canvas');
-    canvas.width = width * 2; // 2x for retina
-    canvas.height = height * 2;
-    
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    
-    ctx.scale(2, 2);
-    ctx.fillStyle = '#0f172a'; // Match bg-slate-900
-    ctx.fillRect(0, 0, width, height);
-    ctx.drawImage(img, 0, 0);
-    
-    canvas.toBlob((blob) => {
-      if (!blob) return;
-      const pngUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = pngUrl;
-      a.download = `execution-plan-${Date.now()}.png`;
-      a.click();
-      URL.revokeObjectURL(pngUrl);
-    }, 'image/png');
-    
-    URL.revokeObjectURL(url);
-  };
-  
-  img.src = url;
-};
-
 // D3 hierarchy node type
 interface TreeNode {
   relOp: RelOp;
@@ -829,21 +738,6 @@ onUnmounted(() => {
         @click="zoomFit"
       >
         <i class="fa-solid fa-expand text-sm"></i>
-      </button>
-      <div class="h-px bg-slate-600 my-1"></div>
-      <button 
-        class="w-10 h-10 bg-slate-700 hover:bg-slate-600 rounded-lg flex items-center justify-center text-slate-300 transition-colors shadow-lg border border-slate-600"
-        title="Export as SVG"
-        @click="exportToSvg"
-      >
-        <i class="fa-solid fa-file-code text-sm"></i>
-      </button>
-      <button 
-        class="w-10 h-10 bg-slate-700 hover:bg-slate-600 rounded-lg flex items-center justify-center text-slate-300 transition-colors shadow-lg border border-slate-600"
-        title="Export as PNG"
-        @click="exportToPng"
-      >
-        <i class="fa-solid fa-image text-sm"></i>
       </button>
     </div>
   </div>
