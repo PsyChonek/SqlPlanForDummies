@@ -4,6 +4,8 @@ import { usePlanState } from '../composables/planState';
 import { flattenRelOps } from '../composables/sqlPlanParser';
 import type { RelOp } from '../types/sqlplan';
 
+const props = withDefaults(defineProps<{ showHeader?: boolean }>(), { showHeader: true });
+
 const { state, getNodeCostPercentage } = usePlanState();
 
 interface Issue {
@@ -174,12 +176,14 @@ const getSeverityBg = (severity: string) => {
     default: return 'bg-blue-500/10 border-blue-500/30';
   }
 };
+
+defineExpose({ issueCount: computed(() => issues.value.length) });
 </script>
 
 <template>
   <div class="h-full flex flex-col bg-slate-800 rounded-2xl shadow-xl overflow-hidden">
     <!-- Header -->
-    <div class="px-4 py-3 bg-slate-700 border-b border-slate-600 flex items-center justify-between">
+    <div v-if="props.showHeader" class="px-4 py-3 bg-slate-700 border-b border-slate-600 flex items-center justify-between">
       <h3 class="flex items-center gap-2 text-lg font-bold text-white">
         <i class="fa-solid fa-microscope text-purple-400"></i>
         Plan Analysis

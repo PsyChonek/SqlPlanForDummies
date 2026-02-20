@@ -5,6 +5,8 @@ import { usePlanState } from '../composables/planState';
 import type { RelOp } from '../types/sqlplan';
 import { getCostSeverity, getCostColor, formatTime, formatRows } from '../types/sqlplan';
 
+const props = withDefaults(defineProps<{ showHeader?: boolean }>(), { showHeader: true });
+
 const {
   state,
   selectNode,
@@ -782,7 +784,7 @@ onUnmounted(() => {
 <template>
   <div class="relative w-full h-full bg-slate-800 rounded-2xl shadow-xl">
     <!-- Header bar -->
-    <div class="absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-4 py-3 bg-slate-700 border-b border-slate-600 rounded-t-2xl">
+    <div v-if="props.showHeader" class="absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-4 py-3 bg-slate-700 border-b border-slate-600 rounded-t-2xl">
       <div class="flex items-center gap-2">
         <i class="fa-solid fa-diagram-project text-blue-400"></i>
         <span class="text-sm font-semibold text-slate-200">Execution Plan</span>
@@ -791,12 +793,12 @@ onUnmounted(() => {
         <span>Total Cost: {{ state.selectedStatement.statementSubTreeCost.toFixed(6) }}</span>
       </div>
     </div>
-    
+
     <!-- Graph container -->
     <div
       ref="viewport"
-      class="w-full h-full pt-10 overflow-hidden"
-      :class="{ 'flex items-center justify-center': !state.selectedStatement }"
+      class="w-full h-full overflow-hidden"
+      :class="[props.showHeader ? 'pt-10' : '', { 'flex items-center justify-center': !state.selectedStatement }]"
     >
       <!-- Empty state -->
       <div v-if="!state.selectedStatement" class="text-center text-slate-500">
