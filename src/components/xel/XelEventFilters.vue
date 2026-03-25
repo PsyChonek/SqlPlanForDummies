@@ -6,12 +6,22 @@ const { state, setFilter, clearFilter, hasActiveFilters, eventTypes } = useXelSt
 
 const searchText = ref('');
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+let suppressSync = false;
 
 watch(searchText, (val) => {
   if (debounceTimer) clearTimeout(debounceTimer);
+  suppressSync = true;
   debounceTimer = setTimeout(() => {
     setFilter({ textSearch: val.length > 0 ? val : null });
+    suppressSync = false;
   }, 200);
+});
+
+// Sync back when textSearch is set programmatically (e.g. from event details)
+watch(() => state.filter.textSearch, (val) => {
+  if (!suppressSync) {
+    searchText.value = val ?? '';
+  }
 });
 
 const clearSearch = () => {
@@ -21,12 +31,17 @@ const clearSearch = () => {
 
 // Toggle helpers
 const isErrorsActive = computed(() => state.filter.errorsOnly);
-const isLocksActive = computed(() => state.filter.eventNames.some(n => n.startsWith('lock_') || n === 'wait_completed' || n === 'blocked_process_report'));
+const isDeadlocksActive = computed(() => state.filter.deadlocksOnly);
+const isLocksActive = computed(() => state.filter.eventNames.some(n => n.startsWith('lock_') || n === 'blocked_process_report'));
 const isSlowActive = computed(() => state.filter.minDurationUs !== null);
 const isWaitsActive = computed(() => state.filter.eventNames.includes('wait_completed'));
 
 const toggleErrors = () => {
   setFilter({ errorsOnly: !state.filter.errorsOnly });
+};
+
+const toggleDeadlocks = () => {
+  setFilter({ deadlocksOnly: !state.filter.deadlocksOnly });
 };
 
 const toggleLocks = () => {
@@ -64,15 +79,6 @@ const currentSlowLabel = computed(() => {
   const match = slowOptions.find(o => o.value === state.filter.minDurationUs);
   return match ? match.label : null;
 });
-
-const toggleTimeouts = () => {
-  // Timeouts: duration close to 30s (lock timeout default)
-  if (state.filter.minDurationUs === 29_000_000) {
-    setFilter({ minDurationUs: null });
-  } else {
-    setFilter({ minDurationUs: 29_000_000 });
-  }
-};
 
 // Date range filter — custom picker
 const timeFrom = ref('');
@@ -225,13 +231,13 @@ const toggleEventType = (name: string) => {
     </button>
 
     <button
-      @click="toggleTimeouts"
+      @click="toggleDeadlocks"
       class="px-2 py-1 text-xs rounded-lg border transition-colors"
-      :class="state.filter.minDurationUs === 29_000_000
+      :class="isDeadlocksActive
         ? 'bg-red-900/30 border-red-700/50 text-red-300'
         : 'bg-slate-700 border-slate-600 text-slate-400 hover:text-slate-300'"
     >
-      <i class="fa-solid fa-hourglass-end mr-1"></i>Timeouts
+      <i class="fa-solid fa-skull-crossbones mr-1"></i>Deadlocks
     </button>
 
     <button

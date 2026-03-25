@@ -3,7 +3,7 @@ import { ref, watch, onMounted, onUnmounted, computed } from 'vue';
 import { useXelState } from '../../composables/useXelState';
 import * as xelApi from '../../composables/xelTauriApi';
 import type { XelEvent } from '../../types/xel';
-import { getEventSeverity, getEventSeverityBg, formatDuration, formatNumber, formatTimestamp } from '../../types/xel';
+import { getEventSeverity, getEventSeverityBg, formatDuration, formatNumber, formatTimestamp, getLockModeDescription } from '../../types/xel';
 
 const { state, selectEvent } = useXelState();
 
@@ -403,7 +403,7 @@ onUnmounted(() => {
               :style="{ width: getColWidth(col), minWidth: getColWidth(col), flexShrink: 0 }"
               class="px-2.5 truncate border-r border-slate-700/50"
               :class="col === 'result' && row.event.result === 'Error' ? 'text-red-400' : 'text-slate-300'"
-              :title="getCellValue(row.event, col)"
+              :title="col === 'lockMode' && row.event.lockMode ? row.event.lockMode + ' — ' + (getLockModeDescription(row.event.lockMode) || '') : getCellValue(row.event, col)"
             >
               {{ getCellValue(row.event, col) }}
             </div>

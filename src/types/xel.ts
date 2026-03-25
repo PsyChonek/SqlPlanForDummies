@@ -42,6 +42,7 @@ export interface XelFilter {
   textSearch: string | null;
   result: string | null;
   errorsOnly: boolean;
+  deadlocksOnly: boolean;
 }
 
 export interface XelQueryRequest {
@@ -135,6 +136,8 @@ export interface BlockingAnalysis {
   waitEvents: XelEvent[];
   waitStats: WaitTypeStat[];
   deadlocks: ParsedDeadlockGraph[];
+  deadlockId: number | null;
+  deadlockLockEvents: XelEvent[];
   diagnosis: string;
   recommendations: string[];
 }
@@ -210,6 +213,19 @@ export interface ParsedBlockedProcessReport {
   blockingLoginName: string | null;
   blockingStatus: string | null;
   blockingLastBatchStarted: string | null;
+  blockedIsolationLevel: string | null;
+  blockedTranCount: number | null;
+  blockingIsolationLevel: string | null;
+  blockingTranCount: number | null;
+  blockedExecutionStack: ExecutionFrame[];
+  blockingExecutionStack: ExecutionFrame[];
+}
+
+export interface ExecutionFrame {
+  queryHash: string | null;
+  queryPlanHash: string | null;
+  line: number | null;
+  sqlHandle: string | null;
 }
 
 export interface BlockingChainLink {
@@ -228,7 +244,6 @@ export interface BlockingChainLink {
 export interface XelProblemStats {
   deadlockCount: number;
   errorCount: number;
-  timeoutCount: number;
   blockedProcessCount: number;
   lockWaitCount: number;
   topWaitTypes: WaitTypeStat[];
@@ -270,6 +285,33 @@ export function getEventSeverity(event: XelEvent): EventSeverity {
   if (event.eventName.startsWith('lock_') || event.eventName === 'blocked_process_report') return 'lock';
   if (event.durationUs && event.durationUs > 5_000_000) return 'warning';
   return 'normal';
+}
+
+const lockModeDescriptions: Record<string, string> = {
+  'S': 'Shared — reading the resource, no modifications allowed by others',
+  'U': 'Update — may be modified soon; prevents deadlocks from S→X upgrades',
+  'X': 'Exclusive — modifying the resource, blocks all other access',
+  'IS': 'Intent Shared — intends to place S locks on lower-level resources',
+  'IU': 'Intent Update — intends to place U locks on lower-level resources',
+  'IX': 'Intent Exclusive — intends to place X locks on lower-level resources',
+  'SIU': 'Shared + Intent Update — holds S lock and intends U on sub-resources',
+  'SIX': 'Shared + Intent Exclusive — holds S lock and intends X on sub-resources',
+  'UIX': 'Update + Intent Exclusive — holds U lock and intends X on sub-resources',
+  'BU': 'Bulk Update — used during bulk-insert operations',
+  'SCH_S': 'Schema Stability — prevents schema changes while querying',
+  'SCH_M': 'Schema Modification — DDL operation, blocks all access to the object',
+  'NL': 'No Lock — no lock is held',
+  'Sch-S': 'Schema Stability — prevents schema changes while querying',
+  'Sch-M': 'Schema Modification — DDL operation, blocks all access to the object',
+  'RangeS-S': 'Range Shared-Shared — serializable range scan, shared lock on key',
+  'RangeS-U': 'Range Shared-Update — serializable range scan with update intent',
+  'RangeI-N': 'Range Insert-Null — test for gaps before inserting new key',
+  'RangeX-X': 'Range Exclusive-Exclusive — updating a key in a range',
+};
+
+export function getLockModeDescription(mode: string | null): string | null {
+  if (!mode) return null;
+  return lockModeDescriptions[mode] ?? null;
 }
 
 export function getEventSeverityColor(severity: EventSeverity): string {
@@ -351,5 +393,6 @@ export function emptyFilter(): XelFilter {
     textSearch: null,
     result: null,
     errorsOnly: false,
+    deadlocksOnly: false,
   };
 }

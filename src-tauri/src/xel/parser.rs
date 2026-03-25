@@ -474,8 +474,8 @@ fn parse_powershell_event(
         "logical_reads", "physical_reads", "writes", "result", "statement",
         "sql_text", "object_name", "client_app_name", "username",
         "database_name", "resource_type", "mode", "resource_description",
-        "wait_type", "wait_duration", "blocked_process_report", "deadlock_graph",
-        "xml_deadlock_report",
+        "wait_type", "wait_duration", "blocked_process_report", "blocked_process",
+        "deadlock_graph", "xml_deadlock_report", "xml_report",
     ]
     .into_iter()
     .collect();
@@ -509,9 +509,11 @@ fn parse_powershell_event(
         resource_description: get_str("resource_description"),
         wait_type: get_str("wait_type"),
         wait_duration_ms: get_i64("wait_duration"),
-        blocked_process_report: get_str("blocked_process_report"),
+        blocked_process_report: get_str("blocked_process_report")
+            .or_else(|| get_str("blocked_process")),
         deadlock_graph: get_str("deadlock_graph")
-            .or_else(|| get_str("xml_deadlock_report")),
+            .or_else(|| get_str("xml_deadlock_report"))
+            .or_else(|| get_str("xml_report")),
         extra_fields,
     })
 }
@@ -727,8 +729,8 @@ impl XelEventBuilder {
             "result", "statement", "sql_text", "object_name", "client_app_name",
             "username", "database_name", "resource_type", "mode",
             "resource_description", "wait_type", "wait_duration",
-            "blocked_process_report", "deadlock_graph", "xml_deadlock_report",
-            "session_id",
+            "blocked_process_report", "blocked_process", "deadlock_graph",
+            "xml_deadlock_report", "xml_report", "session_id",
         ]
         .into_iter()
         .collect();
@@ -752,10 +754,12 @@ impl XelEventBuilder {
         let resource_description = self.get_str("resource_description");
         let wait_type = self.get_str("wait_type");
         let wait_duration_ms = self.get_i64("wait_duration");
-        let blocked_process_report = self.get_str("blocked_process_report");
+        let blocked_process_report = self.get_str("blocked_process_report")
+            .or_else(|| self.get_str("blocked_process"));
         let deadlock_graph = self
             .get_str("deadlock_graph")
-            .or_else(|| self.get_str("xml_deadlock_report"));
+            .or_else(|| self.get_str("xml_deadlock_report"))
+            .or_else(|| self.get_str("xml_report"));
 
         let extra: HashMap<String, serde_json::Value> = self
             .fields

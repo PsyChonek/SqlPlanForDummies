@@ -54,6 +54,8 @@ pub struct XelFilter {
     pub result: Option<String>,
     #[serde(default)]
     pub errors_only: bool,
+    #[serde(default)]
+    pub deadlocks_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,6 +185,10 @@ pub struct BlockingAnalysis {
     pub wait_stats: Vec<WaitTypeStat>,
     /// Parsed deadlock graphs involving this event's session
     pub deadlocks: Vec<ParsedDeadlockGraph>,
+    /// Deadlock ID from lock events (confirms deadlock without xml_deadlock_report)
+    pub deadlock_id: Option<i64>,
+    /// Lock events that share the same deadlock_id (deadlock participants)
+    pub deadlock_lock_events: Vec<XelEvent>,
     /// Categorized diagnosis: "lock_blocking", "io_starvation", "memory_pressure", "unknown"
     pub diagnosis: String,
     /// Actionable recommendations
@@ -246,7 +252,6 @@ pub struct DeadlockResourceOwner {
 pub struct XelProblemStats {
     pub deadlock_count: usize,
     pub error_count: usize,
-    pub timeout_count: usize,
     pub blocked_process_count: usize,
     pub lock_wait_count: usize,
     /// Top wait types aggregated across all sessions
@@ -279,6 +284,14 @@ pub struct XelEnrichResult {
     pub unique_objects: usize,
     pub unique_queries: usize,
     pub errors: Vec<String>,
+}
+
+/// Database-level settings fetched during enrichment
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbSettings {
+    pub is_read_committed_snapshot_on: bool,
+    pub snapshot_isolation_on: bool,
 }
 
 /// Object found in the same session/transaction as an XACT or unresolvable lock event
@@ -332,6 +345,25 @@ pub struct ParsedBlockedProcessReport {
     pub blocking_login_name: Option<String>,
     pub blocking_status: Option<String>,
     pub blocking_last_batch_started: Option<String>,
+    /// Additional context
+    pub blocked_isolation_level: Option<String>,
+    pub blocked_tran_count: Option<i64>,
+    pub blocking_isolation_level: Option<String>,
+    pub blocking_tran_count: Option<i64>,
+    /// Execution stack frames (query hash + plan hash)
+    #[serde(default)]
+    pub blocked_execution_stack: Vec<ExecutionFrame>,
+    #[serde(default)]
+    pub blocking_execution_stack: Vec<ExecutionFrame>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionFrame {
+    pub query_hash: Option<String>,
+    pub query_plan_hash: Option<String>,
+    pub line: Option<i64>,
+    pub sql_handle: Option<String>,
 }
 
 /// One link in a blocking chain

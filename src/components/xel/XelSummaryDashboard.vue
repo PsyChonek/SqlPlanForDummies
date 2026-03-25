@@ -6,7 +6,7 @@ import * as xelApi from '../../composables/xelTauriApi';
 import type { XelSessionStats, XelProblemStats, TimelineBucket } from '../../types/xel';
 import { formatDuration, formatNumber } from '../../types/xel';
 
-const { state, setFilter, setActiveView, selectSession } = useXelState();
+const { state, setFilter, clearFilter, setActiveView } = useXelState();
 
 const stats = ref<XelSessionStats | null>(null);
 const problems = ref<XelProblemStats | null>(null);
@@ -151,9 +151,8 @@ const renderWaitDistribution = () => {
 
 const filterErrors = () => { setFilter({ errorsOnly: true }); setActiveView('table'); };
 const filterDeadlocks = () => { setFilter({ eventNames: ['xml_deadlock_report', 'lock_deadlock', 'lock_deadlock_chain'] }); setActiveView('table'); };
-const filterTimeouts = () => { setFilter({ eventNames: ['lock_timeout', 'lock_timeout_greater_than_0'] }); setActiveView('table'); };
 const filterBlocked = () => { setFilter({ eventNames: ['blocked_process_report'] }); setActiveView('table'); };
-const filterSession = (sid: number) => { selectSession(sid); setActiveView('table'); };
+const filterSession = (sid: number) => { clearFilter(); setFilter({ textSearch: `session_id:${sid}` }); setActiveView('table'); };
 
 const categoryColor = (cat: string) => {
   const c: Record<string, string> = { io: 'text-blue-400', lock: 'text-red-400', latch: 'text-amber-400', network: 'text-purple-400', cpu: 'text-cyan-400', memory: 'text-pink-400', idle: 'text-slate-500', other: 'text-slate-400' };
@@ -227,16 +226,6 @@ onMounted(fetchData);
             <i class="fa-solid fa-skull-crossbones mr-1"></i>Deadlocks
           </p>
           <p class="text-xl font-bold text-red-400 mt-1">{{ problems.deadlockCount }}</p>
-        </button>
-        <button
-          @click="filterTimeouts"
-          class="bg-orange-950/30 border border-orange-800/30 rounded-xl px-4 py-3 text-left hover:bg-orange-950/50 transition-colors"
-          :class="{ 'opacity-40': problems.timeoutCount === 0 }"
-        >
-          <p class="text-xs text-orange-400/70 uppercase tracking-wider">
-            <i class="fa-solid fa-clock mr-1"></i>Timeouts
-          </p>
-          <p class="text-xl font-bold text-orange-400 mt-1">{{ problems.timeoutCount }}</p>
         </button>
         <button
           @click="filterBlocked"

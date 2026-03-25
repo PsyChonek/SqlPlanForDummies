@@ -17,7 +17,9 @@ pub struct XelStore {
     by_transaction: HashMap<String, Vec<usize>>,
     by_resource: HashMap<String, Vec<usize>>,
     by_activity: HashMap<String, Vec<usize>>, // activity_id GUID (without sequence) → events
+    by_deadlock: HashMap<String, Vec<usize>>, // deadlock_id → events
     all_columns: Vec<String>,
+    db_settings: HashMap<String, DbSettings>, // database_name → settings from enrich
 }
 
 pub struct XelAppState {
@@ -35,7 +37,9 @@ impl XelStore {
             by_transaction: HashMap::new(),
             by_resource: HashMap::new(),
             by_activity: HashMap::new(),
+            by_deadlock: HashMap::new(),
             all_columns: Vec::new(),
+            db_settings: HashMap::new(),
         }
     }
 
@@ -106,6 +110,7 @@ impl XelStore {
         self.by_transaction.clear();
         self.by_resource.clear();
         self.by_activity.clear();
+        self.by_deadlock.clear();
 
         for (idx, event) in self.events.iter().enumerate() {
             self.by_event_name
@@ -154,6 +159,28 @@ impl XelStore {
                     }
                 }
             }
+
+            // Also index by attach_activity_id_xfer — the transferred activity ID
+            // links child events (waits) to their parent request even when each
+            // child has its own unique attach_activity_id
+            if let Some(v) = event.extra_fields.get("attach_activity_id_xfer") {
+                if let Some(s) = v.as_str() {
+                    if let Some(guid) = s.split(':').next() {
+                        if guid.len() >= 36 {
+                            self.by_activity.entry(guid.to_string()).or_default().push(idx);
+                        }
+                    }
+                }
+            }
+
+            // Index by deadlock_id (from lock_deadlock events)
+            if let Some(v) = event.extra_fields.get("deadlock_id") {
+                if let Some(did) = Self::json_value_as_i64(v) {
+                    if did != 0 {
+                        self.by_deadlock.entry(did.to_string()).or_default().push(idx);
+                    }
+                }
+            }
         }
     }
 
@@ -199,14 +226,18 @@ impl XelStore {
         }
 
         // 2. Same activity_id GUID — events in the same request within time window
-        if let Some(v) = anchor.extra_fields.get("attach_activity_id") {
-            if let Some(s) = v.as_str() {
-                if let Some(guid) = s.split(':').next() {
-                    if guid.len() >= 36 {
-                        if let Some(indices) = self.by_activity.get(guid) {
-                            for &idx in indices {
-                                if in_range(idx) {
-                                    related_indices.insert(idx);
+        //    Check both attach_activity_id and attach_activity_id_xfer since
+        //    child events (waits) may each have unique activity IDs but share _xfer
+        for field in &["attach_activity_id", "attach_activity_id_xfer"] {
+            if let Some(v) = anchor.extra_fields.get(*field) {
+                if let Some(s) = v.as_str() {
+                    if let Some(guid) = s.split(':').next() {
+                        if guid.len() >= 36 {
+                            if let Some(indices) = self.by_activity.get(guid) {
+                                for &idx in indices {
+                                    if in_range(idx) {
+                                        related_indices.insert(idx);
+                                    }
                                 }
                             }
                         }
@@ -559,12 +590,22 @@ impl XelStore {
         self.by_resource.clear();
         self.by_activity.clear();
         self.all_columns.clear();
+        self.db_settings.clear();
     }
 
-    pub fn event_count(&self) -> usize {
-        self.events.len()
+    pub fn set_db_settings(&mut self, settings: HashMap<String, DbSettings>) {
+        self.db_settings = settings;
     }
 
+    /// Check if a database has RCSI or snapshot isolation already enabled
+    pub fn has_snapshot_isolation(&self, db_name: Option<&str>) -> bool {
+        if let Some(name) = db_name {
+            if let Some(settings) = self.db_settings.get(name) {
+                return settings.is_read_committed_snapshot_on || settings.snapshot_isolation_on;
+            }
+        }
+        false
+    }
     /// Helper: extract i64 from a serde_json::Value that may be Number or String
     fn json_value_as_i64(v: &serde_json::Value) -> Option<i64> {
         match v {
@@ -576,17 +617,33 @@ impl XelStore {
 
     /// Parse wait_resource strings like "KEY: 6:72057625259081728 (hash)" to extract hobt_id
     fn parse_wait_resource_hobt_id(wait_resource: &str) -> Option<i64> {
-        // Formats: "KEY: db_id:hobt_id (hash)", "PAGE: db_id:file:page", "RID: db_id:file:page:slot"
-        // We want the hobt_id from KEY locks
         let trimmed = wait_resource.trim();
         if let Some(rest) = trimmed.strip_prefix("KEY:") {
             let rest = rest.trim();
-            // "6:72057625259081728 (c9a34554b564)" → split on ':'
             let parts: Vec<&str> = rest.splitn(3, ':').collect();
             if parts.len() >= 2 {
-                // Second part is "72057625259081728 (hash)" or just "72057625259081728"
                 let hobt_str = parts[1].split_whitespace().next().unwrap_or("");
                 return hobt_str.parse::<i64>().ok();
+            }
+        }
+        None
+    }
+
+    /// Parse wait_resource "OBJECT: db_id:object_id:partition" to extract object_id
+    fn parse_wait_resource_object_id(wait_resource: &str) -> Option<i64> {
+        let trimmed = wait_resource.trim();
+        if let Some(rest) = trimmed.strip_prefix("OBJECT:") {
+            let rest = rest.trim();
+            let parts: Vec<&str> = rest.splitn(4, ':').collect();
+            if parts.len() >= 2 {
+                return parts[1].trim().parse::<i64>().ok();
+            }
+        }
+        if let Some(rest) = trimmed.strip_prefix("ALLOCATION_UNIT:") {
+            let rest = rest.trim();
+            let parts: Vec<&str> = rest.splitn(3, ':').collect();
+            if parts.len() >= 2 {
+                return parts[1].trim().parse::<i64>().ok();
             }
         }
         None
@@ -615,6 +672,12 @@ impl XelStore {
                     if id > 0 { ids.insert(id); }
                 }
             }
+            // From object_id field (lock events with resource_type=OBJECT)
+            if let Some(v) = event.extra_fields.get("object_id") {
+                if let Some(id) = Self::json_value_as_i64(v) {
+                    if id > 0 { ids.insert(id); }
+                }
+            }
             // From wait_resource string (e.g., "KEY: 6:72057625259081728 (hash)")
             if let Some(ref wr) = event.extra_fields.get("wait_resource")
                 .and_then(|v| v.as_str().map(|s| s.to_string()))
@@ -624,8 +687,131 @@ impl XelStore {
                     ids.insert(hobt_id);
                 }
             }
+            // From BPR wait_resource (OBJECT: db_id:object_id:partition)
+            if let Some(ref xml) = event.blocked_process_report {
+                // Quick extract of waitresource from BPR XML
+                if let Some(start) = xml.find("waitresource=\"") {
+                    let rest = &xml[start + 14..];
+                    if let Some(end) = rest.find('"') {
+                        let wr = &rest[..end];
+                        if let Some(obj_id) = Self::parse_wait_resource_object_id(wr) {
+                            ids.insert(obj_id);
+                        }
+                        if let Some(hobt_id) = Self::parse_wait_resource_hobt_id(wr) {
+                            ids.insert(hobt_id);
+                        }
+                    }
+                }
+            }
         }
         ids.into_iter().collect()
+    }
+
+    /// Collect unique direct object_ids from OBJECT: wait_resource and BPR blocked_process XML
+    pub fn collect_direct_object_ids(&self) -> Vec<i64> {
+        let mut ids: HashSet<i64> = HashSet::new();
+        for event in &self.events {
+            // From object_id extra field
+            if let Some(v) = event.extra_fields.get("object_id") {
+                if let Some(id) = Self::json_value_as_i64(v) {
+                    if id > 0 { ids.insert(id); }
+                }
+            }
+            // From OBJECT: wait_resource
+            if let Some(ref wr) = event.extra_fields.get("wait_resource")
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
+            {
+                if let Some(obj_id) = Self::parse_wait_resource_object_id(wr) {
+                    ids.insert(obj_id);
+                }
+            }
+            // From BPR XML
+            if let Some(ref xml) = event.blocked_process_report {
+                if let Some(start) = xml.find("waitresource=\"") {
+                    let rest = &xml[start + 14..];
+                    if let Some(end) = rest.find('"') {
+                        let wr = &rest[..end];
+                        if let Some(obj_id) = Self::parse_wait_resource_object_id(wr) {
+                            ids.insert(obj_id);
+                        }
+                    }
+                }
+                // Object Id from inputbuf "Proc [Database Id = X Object Id = Y]"
+                for cap_start in xml.match_indices("Object Id = ").map(|(i, _)| i) {
+                    let rest = &xml[cap_start + 12..];
+                    if let Some(end) = rest.find(']') {
+                        if let Ok(id) = rest[..end].trim().parse::<i64>() {
+                            if id > 0 { ids.insert(id); }
+                        }
+                    }
+                }
+            }
+        }
+        ids.into_iter().collect()
+    }
+
+    /// Apply resolved direct object names (from sys.objects) to events and BPR data
+    pub fn apply_direct_object_names(&mut self, obj_map: &HashMap<i64, String>) -> usize {
+        let mut count = 0;
+        for event in &mut self.events {
+            // Resolve object_id extra field
+            if let Some(v) = event.extra_fields.get("object_id") {
+                if let Some(id) = Self::json_value_as_i64(v) {
+                    if let Some(name) = obj_map.get(&id) {
+                        if !event.extra_fields.contains_key("resolved_object") {
+                            event.extra_fields.insert(
+                                "resolved_object".to_string(),
+                                serde_json::Value::String(name.clone()),
+                            );
+                            if event.object_name.is_none() {
+                                event.object_name = Some(name.clone());
+                            }
+                            count += 1;
+                        }
+                    }
+                }
+            }
+            // Resolve BPR wait_resource and inputbuf Object Ids
+            if let Some(ref xml) = event.blocked_process_report {
+                let mut resolved_wr: Option<String> = None;
+                if let Some(start) = xml.find("waitresource=\"") {
+                    let rest = &xml[start + 14..];
+                    if let Some(end) = rest.find('"') {
+                        let wr = &rest[..end];
+                        if let Some(obj_id) = Self::parse_wait_resource_object_id(wr) {
+                            if let Some(name) = obj_map.get(&obj_id) {
+                                resolved_wr = Some(format!("{} [{}]", wr.trim(), name));
+                            }
+                        }
+                    }
+                }
+                if let Some(ref resolved) = resolved_wr {
+                    event.extra_fields.insert(
+                        "resolved_wait_resource".to_string(),
+                        serde_json::Value::String(resolved.clone()),
+                    );
+                    count += 1;
+                }
+                // Resolve "Proc [Database Id = X Object Id = Y]" references
+                let mut xml_clone = xml.clone();
+                for cap_start in xml.match_indices("Object Id = ").map(|(i, _)| i).collect::<Vec<_>>() {
+                    let rest = &xml[cap_start + 12..];
+                    if let Some(end) = rest.find(']') {
+                        if let Ok(id) = rest[..end].trim().parse::<i64>() {
+                            if let Some(name) = obj_map.get(&id) {
+                                let old = format!("Object Id = {}]", id);
+                                let new = format!("Object Id = {} ({})]", id, name);
+                                xml_clone = xml_clone.replacen(&old, &new, 1);
+                            }
+                        }
+                    }
+                }
+                if xml_clone != *xml {
+                    event.blocked_process_report = Some(xml_clone);
+                }
+            }
+        }
+        count
     }
 
     /// Collect unique non-zero query_hash values (handles both Number and String)
@@ -661,7 +847,7 @@ impl XelStore {
         count
     }
 
-    /// Apply resolved object names from associated_object_id and wait_resource
+    /// Apply resolved object names from associated_object_id, object_id, and wait_resource
     pub fn apply_object_names(&mut self, obj_map: &HashMap<i64, String>) -> usize {
         let mut count = 0;
         for event in &mut self.events {
@@ -679,6 +865,24 @@ impl XelStore {
                             event.object_name = Some(name.clone());
                         }
                         resolved = true;
+                    }
+                }
+            }
+
+            // From object_id (lock events with resource_type=OBJECT)
+            if !resolved {
+                if let Some(v) = event.extra_fields.get("object_id") {
+                    if let Some(id) = Self::json_value_as_i64(v) {
+                        if let Some(name) = obj_map.get(&id) {
+                            event.extra_fields.insert(
+                                "resolved_object".to_string(),
+                                serde_json::Value::String(name.clone()),
+                            );
+                            if event.object_name.is_none() {
+                                event.object_name = Some(name.clone());
+                            }
+                            resolved = true;
+                        }
                     }
                 }
             }
@@ -714,16 +918,26 @@ impl XelStore {
             None => return Vec::new(),
         };
 
-        // Collect candidate event indices from session + transaction indexes
+        // Collect candidate event indices using precise correlators first,
+        // then fall back to session_id with a tight time window
         let mut candidate_indices: HashSet<usize> = HashSet::new();
 
-        if let Some(sid) = anchor.session_id {
-            if let Some(indices) = self.by_session.get(&sid) {
-                candidate_indices.extend(indices.iter().copied());
+        // 1. activity_id — same logical request
+        if let Some(v) = anchor.extra_fields.get("attach_activity_id")
+            .or_else(|| anchor.extra_fields.get("activity_id"))
+        {
+            if let Some(s) = v.as_str() {
+                if let Some(guid) = s.split(':').next() {
+                    if guid.len() >= 36 {
+                        if let Some(indices) = self.by_activity.get(guid) {
+                            candidate_indices.extend(indices.iter().copied());
+                        }
+                    }
+                }
             }
         }
 
-        // Also check by transaction_id
+        // 2. transaction_id — same transaction
         if let Some(v) = anchor.extra_fields.get("transaction_id") {
             let tid_str = match v {
                 serde_json::Value::Number(n) => n.as_i64().filter(|&n| n != 0).map(|n| n.to_string()),
@@ -733,6 +947,21 @@ impl XelStore {
             if let Some(tid) = tid_str {
                 if let Some(indices) = self.by_transaction.get(&tid) {
                     candidate_indices.extend(indices.iter().copied());
+                }
+            }
+        }
+
+        // 3. session_id — only with a tight time window (±30s) as fallback
+        if let Some(sid) = anchor.session_id {
+            if let Some(indices) = self.by_session.get(&sid) {
+                let window = chrono::Duration::seconds(30);
+                let range_start = anchor.timestamp - window;
+                let range_end = anchor.timestamp + window;
+                for &idx in indices {
+                    let ts = self.events[idx].timestamp;
+                    if ts >= range_start && ts <= range_end {
+                        candidate_indices.insert(idx);
+                    }
                 }
             }
         }
@@ -828,7 +1057,6 @@ impl XelStore {
     pub fn get_problem_stats(&self, filter: &XelFilter) -> XelProblemStats {
         let mut deadlock_count = 0usize;
         let mut error_count = 0usize;
-        let mut timeout_count = 0usize;
         let mut blocked_process_count = 0usize;
         let mut lock_wait_count = 0usize;
 
@@ -855,11 +1083,6 @@ impl XelStore {
                     entry.0 += 1;
                     entry.1 += event.duration_us.unwrap_or(0);
                 }
-            }
-
-            // Timeouts
-            if en.contains("timeout") {
-                timeout_count += 1;
             }
 
             // Blocked process reports
@@ -964,7 +1187,6 @@ impl XelStore {
         XelProblemStats {
             deadlock_count,
             error_count,
-            timeout_count,
             blocked_process_count,
             lock_wait_count,
             top_wait_types,
@@ -993,6 +1215,8 @@ impl XelStore {
                     wait_events: Vec::new(),
                     wait_stats: Vec::new(),
                     deadlocks: Vec::new(),
+                    deadlock_id: None,
+                    deadlock_lock_events: Vec::new(),
                     diagnosis: "unknown".into(),
                     recommendations: Vec::new(),
                 };
@@ -1002,6 +1226,18 @@ impl XelStore {
         let anchor_sid = anchor.session_id;
         let anchor_ts = anchor.timestamp;
         let window = chrono::Duration::milliseconds(time_window_ms);
+
+        // Compute execution window: [start, end] for the anchor event.
+        // For completed events (rpc_completed, sql_batch_completed), the timestamp is
+        // the completion time, so start = timestamp - duration.
+        // This is used to filter wait events to only those that occurred DURING execution.
+        let anchor_dur_us = anchor.duration_us.unwrap_or(0);
+        let anchor_exec_start = if anchor_dur_us > 0 {
+            anchor_ts - chrono::Duration::microseconds(anchor_dur_us)
+        } else {
+            anchor_ts - window
+        };
+        let anchor_exec_end = anchor_ts;
 
         // 1. Find all blocked_process_report events in time window
         let bpr_indices = self
@@ -1017,6 +1253,23 @@ impl XelStore {
             involved_sessions.insert(sid);
         }
 
+        // If the anchor IS a blocked_process_report, pre-seed involved_sessions
+        // from its own XML. The event's session_id is the XE listener session,
+        // not the blocked/blocking SPID, so we need the real SPIDs to match.
+        if anchor.event_name == "blocked_process_report" {
+            if let Some(ref xml) = anchor.blocked_process_report {
+                if let Some(parsed) = parse_blocked_process_report_xml(xml, anchor.id, anchor.timestamp) {
+                    if let Some(s) = parsed.blocked_spid {
+                        involved_sessions.insert(s);
+                    }
+                    if let Some(s) = parsed.blocking_spid {
+                        involved_sessions.insert(s);
+                    }
+                    parsed_bprs.push(parsed);
+                }
+            }
+        }
+
         for &idx in &bpr_indices {
             let bpr_event = &self.events[idx];
             let diff = (bpr_event.timestamp - anchor_ts).num_milliseconds().abs();
@@ -1026,13 +1279,18 @@ impl XelStore {
 
             if let Some(ref xml) = bpr_event.blocked_process_report {
                 if let Some(parsed) = parse_blocked_process_report_xml(xml, bpr_event.id, bpr_event.timestamp) {
-                    // Only include if anchor session is involved
-                    let anchor_involved = anchor_sid.map_or(true, |sid| {
+                    // Skip if already added (e.g. anchor's own BPR)
+                    if parsed_bprs.iter().any(|p| p.event_id == parsed.event_id) {
+                        continue;
+                    }
+                    // Include if any known involved session is referenced
+                    let session_involved = anchor_sid.map_or(true, |sid| {
                         parsed.blocked_spid == Some(sid)
                             || parsed.blocking_spid == Some(sid)
-                    });
+                    }) || parsed.blocked_spid.map_or(false, |s| involved_sessions.contains(&s))
+                       || parsed.blocking_spid.map_or(false, |s| involved_sessions.contains(&s));
 
-                    if anchor_involved {
+                    if session_involved {
                         if let Some(s) = parsed.blocked_spid {
                             involved_sessions.insert(s);
                         }
@@ -1076,6 +1334,15 @@ impl XelStore {
 
         parsed_bprs.sort_by_key(|p| p.timestamp);
 
+        // Enrich BPR wait_resource with resolved object names from extra_fields
+        for bpr in &mut parsed_bprs {
+            if let Some(event) = self.events.iter().find(|e| e.id == bpr.event_id) {
+                if let Some(resolved) = event.extra_fields.get("resolved_wait_resource").and_then(|v| v.as_str()) {
+                    bpr.blocked_wait_resource = Some(resolved.to_string());
+                }
+            }
+        }
+
         // 2. Build blocking chain from BPRs
         let blocking_chain = build_blocking_chain(&parsed_bprs, &self.events, &involved_sessions, anchor_ts, window);
 
@@ -1103,13 +1370,122 @@ impl XelStore {
         blocker_events.sort_by_key(|e| e.timestamp);
         blocker_events.truncate(100);
 
+        // 3b. When no BPRs found, try to find blocking sessions by correlating lock events.
+        // Look at other sessions that held locks on the same object around the same time.
+        if parsed_bprs.is_empty() && blocker_events.is_empty() {
+            // Collect the anchor session's object(s) — from object_name, extra_fields
+            let mut contended_objects: HashSet<String> = HashSet::new();
+            if let Some(ref obj) = anchor.object_name {
+                contended_objects.insert(obj.to_lowercase());
+            }
+            for key in ["resolved_object", "resolved_wait_object"] {
+                if let Some(name) = anchor.extra_fields.get(key).and_then(|v| v.as_str()) {
+                    contended_objects.insert(name.to_lowercase());
+                }
+            }
+            // Collect associated_object_id from the anchor session's lock events in window
+            let mut contended_hobt_ids: HashSet<i64> = HashSet::new();
+            if let Some(sid) = anchor_sid {
+                let lock_scan_names = ["wait_completed", "lock_acquired", "locks_lock_waits"];
+                for name in &lock_scan_names {
+                    if let Some(indices) = self.by_event_name.get(*name) {
+                        for &idx in indices {
+                            let ev = &self.events[idx];
+                            if ev.session_id != Some(sid) { continue; }
+                            // Only consider lock events during execution window
+                            if ev.timestamp < anchor_exec_start || ev.timestamp > anchor_exec_end {
+                                continue;
+                            }
+                            let is_lock_wait = ev.wait_type.as_deref().map_or(false, |w| w.starts_with("LCK_M_"))
+                                || ev.event_name != "wait_completed";
+                            if !is_lock_wait { continue; }
+                            if let Some(hobt) = ev.extra_fields.get("associated_object_id").and_then(|v| Self::json_value_as_i64(v)) {
+                                if hobt != 0 { contended_hobt_ids.insert(hobt); }
+                            }
+                            if let Some(ref obj) = ev.object_name {
+                                contended_objects.insert(obj.to_lowercase());
+                            }
+                            for key in ["resolved_object", "resolved_wait_object"] {
+                                if let Some(name) = ev.extra_fields.get(key).and_then(|v| v.as_str()) {
+                                    contended_objects.insert(name.to_lowercase());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !contended_objects.is_empty() || !contended_hobt_ids.is_empty() {
+                // Search lock-related and completed events from OTHER sessions in the time window
+                let search_names = ["lock_acquired", "lock_released", "lock_escalation",
+                    "locks_lock_waits", "lock_timeout", "lock_timeout_greater_than_0",
+                    "wait_completed", "rpc_completed", "sql_batch_completed"];
+                let mut candidate_sids: HashMap<i64, Vec<XelEvent>> = HashMap::new();
+
+                for name in &search_names {
+                    if let Some(indices) = self.by_event_name.get(*name) {
+                        for &idx in indices {
+                            let ev = &self.events[idx];
+                            if ev.session_id == anchor_sid || ev.session_id.is_none() {
+                                continue;
+                            }
+                            // Only consider events that overlap with the anchor's execution window
+                            if ev.timestamp < anchor_exec_start || ev.timestamp > anchor_exec_end {
+                                continue;
+                            }
+                            let mut matches = false;
+                            if let Some(ref obj) = ev.object_name {
+                                if contended_objects.contains(&obj.to_lowercase()) {
+                                    matches = true;
+                                }
+                            }
+                            for key in ["resolved_object", "resolved_wait_object"] {
+                                if let Some(n) = ev.extra_fields.get(key).and_then(|v| v.as_str()) {
+                                    if contended_objects.contains(&n.to_lowercase()) {
+                                        matches = true;
+                                    }
+                                }
+                            }
+                            if !matches {
+                                if let Some(hobt) = ev.extra_fields.get("associated_object_id").and_then(|v| Self::json_value_as_i64(v)) {
+                                    if contended_hobt_ids.contains(&hobt) {
+                                        matches = true;
+                                    }
+                                }
+                            }
+                            if matches {
+                                let sid = ev.session_id.unwrap();
+                                candidate_sids.entry(sid).or_default().push(ev.clone());
+                            }
+                        }
+                    }
+                }
+
+                for (sid, mut events) in candidate_sids {
+                    involved_sessions.insert(sid);
+                    events.sort_by_key(|e| e.timestamp);
+                    events.truncate(20);
+                    blocker_events.extend(events);
+                }
+                blocker_events.sort_by_key(|e| e.timestamp);
+                blocker_events.truncate(100);
+            }
+        }
+
         // 4. Find lock_escalation events in time window
         let mut lock_escalations: Vec<XelEvent> = Vec::new();
         if let Some(esc_indices) = self.by_event_name.get("lock_escalation") {
             for &idx in esc_indices {
                 let ev = &self.events[idx];
-                let diff = (ev.timestamp - anchor_ts).num_milliseconds().abs();
-                if diff <= time_window_ms {
+                // For escalations from the anchor session, restrict to execution window.
+                // For other involved sessions, use the broader time window.
+                let in_window = if ev.session_id == anchor_sid {
+                    ev.timestamp >= anchor_exec_start && ev.timestamp <= anchor_exec_end
+                } else {
+                    let diff = (ev.timestamp - anchor_ts).num_milliseconds().abs();
+                    diff <= time_window_ms
+                };
+                if in_window {
                     if involved_sessions.is_empty()
                         || ev.session_id.map_or(false, |s| involved_sessions.contains(&s))
                     {
@@ -1119,7 +1495,15 @@ impl XelStore {
             }
         }
 
-        // 5. Find wait events for the anchor session
+        // 5. Find wait events for involved sessions (anchor + blocked/blocking SPIDs)
+        // For blocked_process_report events, the anchor's session_id is the XE listener,
+        // so we need to search by the real involved SPIDs from the parsed BPRs.
+        let wait_search_sids: HashSet<i64> = if anchor.event_name == "blocked_process_report" {
+            // Use all involved sessions (blocked + blocking SPIDs)
+            involved_sessions.clone()
+        } else {
+            anchor_sid.into_iter().collect()
+        };
         let mut wait_events: Vec<XelEvent> = Vec::new();
         let wait_event_names = ["locks_lock_waits", "lock_timeout", "lock_timeout_greater_than_0", "wait_completed", "lock_acquired"];
         for name in &wait_event_names {
@@ -1130,9 +1514,17 @@ impl XelStore {
                     if ev.event_name == "lock_acquired" && ev.duration_us.unwrap_or(0) == 0 {
                         continue;
                     }
-                    if ev.session_id == anchor_sid {
-                        let diff = (ev.timestamp - anchor_ts).num_milliseconds().abs();
-                        if diff <= time_window_ms {
+                    if ev.session_id.map_or(false, |s| wait_search_sids.contains(&s)) {
+                        // For the anchor's own session, only include waits that occurred
+                        // DURING the anchor's execution window (not after it completed).
+                        // For other sessions (blocking SPIDs), use the broader time window.
+                        let in_window = if ev.session_id == anchor_sid {
+                            ev.timestamp >= anchor_exec_start && ev.timestamp <= anchor_exec_end
+                        } else {
+                            let diff = (ev.timestamp - anchor_ts).num_milliseconds().abs();
+                            diff <= time_window_ms
+                        };
+                        if in_window {
                             wait_events.push(ev.clone());
                         }
                     }
@@ -1142,37 +1534,20 @@ impl XelStore {
         wait_events.sort_by_key(|e| e.timestamp);
 
         // 6. Aggregate wait stats by wait type
-        let wait_stats = aggregate_wait_stats(&wait_events);
+        let mut wait_stats = aggregate_wait_stats(&wait_events);
 
         // 7. Find and parse deadlock graphs in time window
         let mut deadlocks: Vec<ParsedDeadlockGraph> = Vec::new();
-        let deadlock_event_names = ["xml_deadlock_report", "lock_deadlock", "lock_deadlock_chain"];
+        let deadlock_event_names = ["xml_deadlock_report", "database_xml_deadlock_report", "lock_deadlock", "lock_deadlock_chain"];
 
-        // Detect if anchor event is likely a deadlock victim:
-        // - Error result with non-timeout duration (not ~30s)
-        // - Or error_number 1205 (deadlock)
+        // Detect if anchor event is likely a deadlock victim (error_number 1205)
         let error_number = anchor.extra_fields.get("error_number")
             .and_then(|v| match v {
                 serde_json::Value::Number(n) => n.as_i64(),
                 serde_json::Value::String(s) => s.parse().ok(),
                 _ => None,
             });
-        let is_error = anchor.result.as_deref() == Some("Error")
-            || anchor.result.as_deref() == Some("Abort");
-        let is_likely_deadlock_victim = error_number == Some(1205)
-            || (is_error && anchor.duration_us.map_or(false, |d| {
-                // Deadlock victims get killed at arbitrary times (not 30s timeout)
-                // If duration is NOT close to a timeout boundary, more likely deadlock
-                let d_sec = d / 1_000_000;
-                d_sec < 28 || (d_sec > 32 && d_sec < 58)
-            }));
-        let is_likely_timeout = error_number == Some(-2)
-            || (is_error && anchor.duration_us.map_or(false, |d| {
-                let d_sec = d / 1_000_000;
-                (28..=32).contains(&d_sec) || (58..=62).contains(&d_sec)
-                    || (118..=122).contains(&d_sec) || (298..=302).contains(&d_sec)
-            }));
-
+        let is_likely_deadlock_victim = error_number == Some(1205);
         for name in &deadlock_event_names {
             if let Some(indices) = self.by_event_name.get(*name) {
                 for &idx in indices {
@@ -1203,23 +1578,128 @@ impl XelStore {
         // Deduplicate by event_id
         deadlocks.dedup_by_key(|d| d.event_id);
 
+        // 7b. Search for deadlock_id on lock events in the same session/transaction/time window.
+        // This confirms a deadlock even when xml_deadlock_report was not captured.
+        let mut deadlock_id: Option<i64> = None;
+        let mut deadlock_lock_events: Vec<XelEvent> = Vec::new();
+
+        // First check the anchor event itself
+        if let Some(did) = anchor.extra_fields.get("deadlock_id").and_then(|v| Self::json_value_as_i64(v)) {
+            if did != 0 {
+                deadlock_id = Some(did);
+            }
+        }
+
+        // If anchor doesn't have deadlock_id, search related events in same session/transaction
+        if deadlock_id.is_none() {
+            // Check events in same session within time window
+            if let Some(sid) = anchor_sid {
+                if let Some(indices) = self.by_session.get(&sid) {
+                    for &idx in indices {
+                        let ev = &self.events[idx];
+                        let diff = (ev.timestamp - anchor_ts).num_milliseconds().abs();
+                        if diff <= time_window_ms {
+                            if let Some(did) = ev.extra_fields.get("deadlock_id").and_then(|v| Self::json_value_as_i64(v)) {
+                                if did != 0 {
+                                    deadlock_id = Some(did);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Also check by transaction_id
+            if deadlock_id.is_none() {
+                if let Some(v) = anchor.extra_fields.get("transaction_id") {
+                    let tid_str = match v {
+                        serde_json::Value::Number(n) => n.as_i64().filter(|&n| n != 0).map(|n| n.to_string()),
+                        serde_json::Value::String(s) if !s.is_empty() && s != "0" => Some(s.clone()),
+                        _ => None,
+                    };
+                    if let Some(tid) = tid_str {
+                        if let Some(indices) = self.by_transaction.get(&tid) {
+                            for &idx in indices {
+                                let ev = &self.events[idx];
+                                let diff = (ev.timestamp - anchor_ts).num_milliseconds().abs();
+                                if diff <= time_window_ms {
+                                    if let Some(did) = ev.extra_fields.get("deadlock_id").and_then(|v| Self::json_value_as_i64(v)) {
+                                        if did != 0 {
+                                            deadlock_id = Some(did);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Collect all events with the same deadlock_id
+        if let Some(did) = deadlock_id {
+            if let Some(indices) = self.by_deadlock.get(&did.to_string()) {
+                for &idx in indices {
+                    deadlock_lock_events.push(self.events[idx].clone());
+                }
+            }
+            deadlock_lock_events.sort_by_key(|e| e.timestamp);
+
+            // Find other sessions involved in this deadlock and fetch their SQL
+            let other_sids: HashSet<i64> = deadlock_lock_events.iter()
+                .filter_map(|e| e.session_id)
+                .filter(|s| Some(*s) != anchor_sid)
+                .collect();
+
+            for &sid in &other_sids {
+                if let Some(indices) = self.by_session.get(&sid) {
+                    for &idx in indices {
+                        let ev = &self.events[idx];
+                        let diff = (ev.timestamp - anchor_ts).num_milliseconds().abs();
+                        if diff <= time_window_ms {
+                            if !blocker_events.iter().any(|e| e.id == ev.id) {
+                                blocker_events.push(ev.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            blocker_events.sort_by_key(|e| e.timestamp);
+            blocker_events.truncate(100);
+        }
+
+        let has_deadlock_id = deadlock_id.is_some() && !deadlock_lock_events.is_empty();
+
         // 8. Diagnose the root cause
         let diagnosis = if !deadlocks.is_empty() {
             "deadlock".to_string()
+        } else if has_deadlock_id {
+            // Confirmed deadlock via lock events (deadlock_id present) even without xml graph
+            "deadlock".to_string()
         } else if is_likely_deadlock_victim && deadlocks.is_empty() {
-            // Error with non-timeout duration, high wait ratio, no captured deadlock graph
+            // Error number 1205 but no captured deadlock graph
             "likely_deadlock".to_string()
-        } else if is_likely_timeout {
-            "timeout".to_string()
         } else {
             diagnose_wait_pattern(anchor, &parsed_bprs, &wait_stats)
         };
 
+        // 8b. If the query is CPU-bound (no_waits), discard fallback-correlated blocker
+        // events and wait events — they touched the same objects but didn't actually
+        // block this session. The query spent its time on CPU, not waiting.
+        // Only clear when blockers came from the fallback path (no BPRs, no deadlocks).
+        if diagnosis == "no_waits" && parsed_bprs.is_empty() && deadlocks.is_empty() && !has_deadlock_id {
+            blocker_events.clear();
+            wait_events.clear();
+            wait_stats.clear();
+        }
+
         // 9. Build recommendations
-        let recommendations = build_recommendations(anchor, &diagnosis, &wait_stats, &deadlocks);
+        let has_snapshot = self.has_snapshot_isolation(anchor.database_name.as_deref());
+        let recommendations = build_recommendations(anchor, &diagnosis, &wait_stats, &deadlocks, deadlock_id, &deadlock_lock_events, &parsed_bprs, &blocker_events, has_snapshot);
 
         // 10. Build summary
-        let summary = build_analysis_summary(anchor, &parsed_bprs, &blocking_chain, &wait_stats, &diagnosis, &deadlocks);
+        let summary = build_analysis_summary(anchor, &parsed_bprs, &blocking_chain, &wait_stats, &diagnosis, &deadlocks, deadlock_id, &deadlock_lock_events);
 
         BlockingAnalysis {
             anchor_event_id: event_id,
@@ -1231,6 +1711,8 @@ impl XelStore {
             wait_events,
             wait_stats,
             deadlocks,
+            deadlock_id,
+            deadlock_lock_events,
             diagnosis,
             recommendations,
         }
@@ -1265,12 +1747,18 @@ fn parse_blocked_process_report_xml(
         blocking_login_name: None,
         blocking_status: None,
         blocking_last_batch_started: None,
+        blocked_isolation_level: None,
+        blocked_tran_count: None,
+        blocking_isolation_level: None,
+        blocking_tran_count: None,
+        blocked_execution_stack: Vec::new(),
+        blocking_execution_stack: Vec::new(),
     };
 
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
 
-    #[derive(PartialEq)]
+    #[derive(PartialEq, Clone)]
     enum Section {
         None,
         BlockedProcess,
@@ -1297,21 +1785,41 @@ fn parse_blocked_process_report_xml(
                                 result.blocked_wait_resource = attrs.get("waitresource").cloned();
                                 result.blocked_wait_time_ms = attrs.get("waittime").and_then(|s| s.parse().ok());
                                 result.blocked_lock_mode = attrs.get("lockMode").cloned();
-                                result.blocked_database = attrs.get("currentdb").cloned();
+                                result.blocked_database = attrs.get("currentdb").cloned()
+                                    .or_else(|| attrs.get("currentdbname").cloned());
                                 result.blocked_hostname = attrs.get("hostname").cloned();
                                 result.blocked_app_name = attrs.get("clientapp").cloned();
                                 result.blocked_login_name = attrs.get("loginname").cloned();
+                                result.blocked_isolation_level = attrs.get("isolationlevel").cloned();
+                                result.blocked_tran_count = attrs.get("trancount").and_then(|s| s.parse().ok());
                             }
                             Section::BlockingProcess => {
                                 result.blocking_spid = attrs.get("spid").and_then(|s| s.parse().ok());
                                 result.blocking_xact_id = attrs.get("xactid").cloned();
-                                result.blocking_database = attrs.get("currentdb").cloned();
+                                result.blocking_database = attrs.get("currentdb").cloned()
+                                    .or_else(|| attrs.get("currentdbname").cloned());
                                 result.blocking_hostname = attrs.get("hostname").cloned();
                                 result.blocking_app_name = attrs.get("clientapp").cloned();
                                 result.blocking_login_name = attrs.get("loginname").cloned();
                                 result.blocking_status = attrs.get("status").cloned();
                                 result.blocking_last_batch_started = attrs.get("lastbatchstarted").cloned();
+                                result.blocking_isolation_level = attrs.get("isolationlevel").cloned();
+                                result.blocking_tran_count = attrs.get("trancount").and_then(|s| s.parse().ok());
                             }
+                            Section::None => {}
+                        }
+                    }
+                    "frame" => {
+                        let attrs = extract_xml_attrs(e);
+                        let frame = ExecutionFrame {
+                            query_hash: attrs.get("queryhash").cloned().filter(|s| s != "0x0000000000000000"),
+                            query_plan_hash: attrs.get("queryplanhash").cloned().filter(|s| s != "0x0000000000000000"),
+                            line: attrs.get("line").and_then(|s| s.parse().ok()),
+                            sql_handle: attrs.get("sqlhandle").cloned(),
+                        };
+                        match section {
+                            Section::BlockedProcess => result.blocked_execution_stack.push(frame),
+                            Section::BlockingProcess => result.blocking_execution_stack.push(frame),
                             Section::None => {}
                         }
                     }
@@ -1772,6 +2280,22 @@ fn diagnose_wait_pattern(
         return "no_waits".to_string();
     }
 
+    // If the query is CPU-bound (CPU ≈ duration), waits aren't the bottleneck.
+    // lock_acquired durations may overlap with parallel CPU execution — the query
+    // was actively working the whole time, so these aren't true blocking waits.
+    let anchor_dur = anchor.duration_us.unwrap_or(0);
+    let anchor_cpu = anchor.cpu_time_us.unwrap_or(0);
+    if anchor_dur > 0 && anchor_cpu > 0 {
+        let gap = anchor_dur.saturating_sub(anchor_cpu);
+        let gap_pct = gap as f64 / anchor_dur as f64;
+        // Less than 15% idle time means the query was CPU-bound.
+        // Also check that total wait time exceeds the gap — if waits fit within
+        // the gap they could still be the bottleneck for that portion.
+        if gap_pct < 0.15 && total_wait_dur > gap {
+            return "no_waits".to_string();
+        }
+    }
+
     // Compute per-category scores using BOTH duration and count.
     // XEvent sessions often sample wait_completed events, so captured durations
     // may represent only a fraction of actual wait time. Count is a better
@@ -1855,51 +2379,157 @@ fn build_recommendations(
     diagnosis: &str,
     wait_stats: &[WaitTypeStat],
     deadlocks: &[ParsedDeadlockGraph],
+    deadlock_id: Option<i64>,
+    deadlock_lock_events: &[XelEvent],
+    bprs: &[ParsedBlockedProcessReport],
+    blocker_events: &[XelEvent],
+    has_snapshot_isolation: bool,
 ) -> Vec<String> {
     let mut recs = Vec::new();
+    let has_xml_graph = !deadlocks.is_empty();
+    let has_lock_events = deadlock_id.is_some() && !deadlock_lock_events.is_empty();
 
     match diagnosis {
         "deadlock" => {
-            recs.push("DEADLOCK detected — two or more sessions were waiting on each other's locks.".to_string());
+            // Find other sessions involved in the deadlock and show their details
+            let anchor_sid = anchor.session_id;
+            let mut other_sids: Vec<i64> = Vec::new();
+
+            if has_xml_graph {
+                for dl in deadlocks {
+                    for p in &dl.processes {
+                        if let Some(spid) = p.spid {
+                            if Some(spid) != anchor_sid && !other_sids.contains(&spid) {
+                                other_sids.push(spid);
+                            }
+                        }
+                    }
+                }
+            }
+            if has_lock_events {
+                for ev in deadlock_lock_events {
+                    if let Some(sid) = ev.session_id {
+                        if Some(sid) != anchor_sid && !other_sids.contains(&sid) {
+                            other_sids.push(sid);
+                        }
+                    }
+                }
+            }
+
+            // Show other participants with SQL and lock details
+            for &sid in &other_sids {
+                let mut sql_preview: Option<String> = None;
+                let mut obj_name: Option<String> = None;
+                let mut lock_info: Vec<String> = Vec::new();
+                let mut app_name: Option<String> = None;
+                let mut user_name: Option<String> = None;
+
+                for ev in deadlock_lock_events.iter() {
+                    if ev.session_id == Some(sid) {
+                        if sql_preview.is_none() {
+                            sql_preview = ev.statement.clone().or_else(|| ev.sql_text.clone());
+                        }
+                        if obj_name.is_none() {
+                            obj_name = ev.object_name.clone()
+                                .or_else(|| ev.extra_fields.get("resolved_object").and_then(|v| v.as_str()).map(String::from))
+                                .or_else(|| ev.extra_fields.get("resolved_wait_object").and_then(|v| v.as_str()).map(String::from));
+                        }
+                        if app_name.is_none() { app_name = ev.client_app_name.clone(); }
+                        if user_name.is_none() { user_name = ev.username.clone(); }
+                        if let (Some(ref rt), Some(ref lm)) = (&ev.resource_type, &ev.lock_mode) {
+                            let info = format!("{} {}", lm, rt);
+                            if !lock_info.contains(&info) { lock_info.push(info); }
+                        }
+                    }
+                }
+                // Check XML graph for input buffers
+                if sql_preview.is_none() {
+                    for dl in deadlocks {
+                        for p in &dl.processes {
+                            if p.spid == Some(sid) {
+                                if sql_preview.is_none() { sql_preview = p.input_buffer.clone(); }
+                                if app_name.is_none() { app_name = p.app_name.clone(); }
+                                if user_name.is_none() { user_name = p.login_name.clone(); }
+                            }
+                        }
+                    }
+                }
+
+                let mut desc = format!("Other participant: Session {}", sid);
+                if let Some(ref u) = user_name { desc.push_str(&format!(" ({})", u)); }
+                if let Some(ref a) = app_name { desc.push_str(&format!(" [{}]", a)); }
+                if let Some(ref obj) = obj_name { desc.push_str(&format!(" on [{}]", obj)); }
+                if !lock_info.is_empty() { desc.push_str(&format!(" — locks: {}", lock_info.join(", "))); }
+                if let Some(ref sql) = sql_preview {
+                    let preview: String = sql.chars().take(200).collect();
+                    desc.push_str(&format!("\nSQL: {}", preview));
+                }
+                recs.push(desc);
+            }
+
+            // Show contended resources from lock events
+            let mut resource_info: Vec<String> = Vec::new();
+            for ev in deadlock_lock_events {
+                if let (Some(ref rt), Some(ref lm)) = (&ev.resource_type, &ev.lock_mode) {
+                    let obj = ev.object_name.as_deref().or_else(||
+                        ev.extra_fields.get("resolved_object").and_then(|v| v.as_str())
+                            .or_else(|| ev.extra_fields.get("resolved_wait_object").and_then(|v| v.as_str()))
+                    );
+                    let desc = if let Some(o) = obj {
+                        format!("S{}: {} {} on [{}]", ev.session_id.unwrap_or(0), lm, rt, o)
+                    } else {
+                        format!("S{}: {} {}", ev.session_id.unwrap_or(0), lm, rt)
+                    };
+                    if !resource_info.contains(&desc) {
+                        resource_info.push(desc);
+                    }
+                }
+            }
+            if !resource_info.is_empty() {
+                recs.push(format!("Lock requests at deadlock: {}", resource_info.join(" | ")));
+            }
+
+            // Show contended resources from XML graph
+            if has_xml_graph {
+                for dl in deadlocks {
+                    for res in &dl.resources {
+                        let mut desc = res.resource_type.clone();
+                        if let Some(ref obj) = res.object_name { desc.push_str(&format!(" on [{}]", obj)); }
+                        if let Some(ref idx) = res.index_name { desc.push_str(&format!(" ({})", idx)); }
+                        let holders: Vec<String> = res.holders.iter().map(|h| format!("held {}", h.mode.as_deref().unwrap_or("?"))).collect();
+                        let waiters: Vec<String> = res.waiters.iter().map(|w| format!("waited {}", w.mode.as_deref().unwrap_or("?"))).collect();
+                        if !holders.is_empty() || !waiters.is_empty() {
+                            desc.push_str(&format!(" — {} / {}", holders.join(", "), waiters.join(", ")));
+                        }
+                        recs.push(desc);
+                    }
+                }
+            }
+
             // Check if MERGE is involved
-            let has_merge = deadlocks.iter().any(|dl| {
+            let anchor_sql = anchor.statement.as_deref()
+                .or(anchor.sql_text.as_deref())
+                .unwrap_or("");
+            let has_merge_anchor = anchor_sql.to_uppercase().contains("MERGE");
+            let has_merge_xml = deadlocks.iter().any(|dl| {
                 dl.processes.iter().any(|p| {
-                    p.input_buffer.as_ref().map_or(false, |buf| {
-                        let upper = buf.to_uppercase();
-                        upper.contains("MERGE") || upper.contains("INSERT") || upper.contains("UPDATE")
-                    })
+                    p.input_buffer.as_ref().map_or(false, |buf| buf.to_uppercase().contains("MERGE"))
                 })
             });
-            if has_merge {
-                recs.push("MERGE statements are notorious for deadlocks — they acquire multiple lock types (S, U, X) on the same resources in unpredictable order.".to_string());
-                recs.push("Consider replacing MERGE with separate IF EXISTS/UPDATE/INSERT logic, or use sp_getapplock to serialize concurrent executions.".to_string());
+            if has_merge_anchor || has_merge_xml {
+                recs.push("MERGE acquires multiple lock types (S, U, X) in unpredictable order — common deadlock source. Consider replacing with separate IF EXISTS/UPDATE/INSERT.".to_string());
             }
-            // Check for communication buffer deadlock (parallelism)
+
+            // Check for parallelism deadlock
             let has_exchange = deadlocks.iter().any(|dl| {
                 dl.resources.iter().any(|r| r.resource_type.contains("exchange") || r.resource_type.contains("communication"))
             });
             if has_exchange {
-                recs.push("Parallelism (exchange/communication buffer) deadlock detected — this occurs when parallel query plans deadlock internally.".to_string());
-                recs.push("Try OPTION(MAXDOP 1) on the affected query, or reduce server MAXDOP. Updating statistics may also change the plan.".to_string());
+                recs.push("Parallelism deadlock — parallel query plans deadlocked internally. Try OPTION(MAXDOP 1).".to_string());
             }
-            recs.push("Ensure the SP handles deadlock retries: wrap the MERGE in a WHILE loop with TRY/CATCH and retry logic.".to_string());
-            recs.push("Fix the transaction count mismatch: after a deadlock, the transaction is already rolled back — check XACT_STATE() before calling ROLLBACK.".to_string());
         }
         "likely_deadlock" => {
-            recs.push("This event is likely a DEADLOCK VICTIM — it has an Error result with a non-timeout duration and high wait ratio.".to_string());
-            recs.push("The deadlock graph was not captured in the XEvent session. Enable the 'xml_deadlock_report' event to capture full deadlock details.".to_string());
-            recs.push("Common cause: concurrent MERGE/INSERT/UPDATE operations on the same tables. Consider serializing with sp_getapplock.".to_string());
-            recs.push("Fix transaction handling: check XACT_STATE() in CATCH blocks before ROLLBACK, as deadlock auto-rolls back the transaction.".to_string());
-        }
-        "timeout" => {
-            let dur_sec = anchor.duration_us.unwrap_or(0) / 1_000_000;
-            recs.push(format!(
-                "Execution timeout (~{}s) — the query was terminated because it exceeded the command timeout.",
-                dur_sec
-            ));
-            recs.push("The most common cause is lock blocking — another session holds a lock this query needs.".to_string());
-            recs.push("Check if there are blocked_process_report events around this time (requires 'blocked process threshold' server config).".to_string());
-            recs.push("Consider increasing the command timeout for long-running operations, or optimize the query to complete faster.".to_string());
+            recs.push("Likely DEADLOCK VICTIM — Error result with non-timeout duration pattern.".to_string());
         }
         "io_starvation" => {
             let pageio_count: usize = wait_stats.iter()
@@ -1925,9 +2555,184 @@ fn build_recommendations(
             recs.push("Run the query's execution plan through SQL Plan For Dummies to find expensive operators.".to_string());
         }
         "lock_blocking" | "lock_contention" => {
-            recs.push("Identify the blocking session and its query — consider optimizing it or reducing its transaction scope.".to_string());
-            recs.push("Check if READ COMMITTED SNAPSHOT ISOLATION (RCSI) is enabled — it eliminates reader/writer blocking.".to_string());
-            recs.push("Review lock escalation — if the query touches many rows, SQL Server may escalate to a table lock.".to_string());
+            // Show BPR-derived blocking details
+            for bpr in bprs {
+                let blocked = bpr.blocked_spid.map_or("?".to_string(), |s| s.to_string());
+                let blocker = bpr.blocking_spid.map_or("?".to_string(), |s| s.to_string());
+                let mut desc = format!("Session {} blocked by Session {}", blocked, blocker);
+                if let Some(ref res) = bpr.blocked_wait_resource {
+                    desc.push_str(&format!(" on {}", res));
+                }
+                if let Some(ref lm) = bpr.blocked_lock_mode {
+                    desc.push_str(&format!(" (lock: {})", lm));
+                }
+                if let Some(wt) = bpr.blocked_wait_time_ms {
+                    desc.push_str(&format!(" — waiting {}ms", wt));
+                }
+                recs.push(desc);
+
+                if let Some(ref sql) = bpr.blocking_input_buffer {
+                    let preview: String = sql.chars().take(200).collect();
+                    recs.push(format!("Blocker (S{}) SQL: {}", blocker, preview));
+                }
+                if let Some(ref sql) = bpr.blocked_input_buffer {
+                    let preview: String = sql.chars().take(200).collect();
+                    recs.push(format!("Victim (S{}) SQL: {}", blocked, preview));
+                }
+                // Show execution stack if available
+                for frame in &bpr.blocked_execution_stack {
+                    if let Some(ref qh) = frame.query_hash {
+                        let mut stack_info = format!("Victim query hash: {}", qh);
+                        if let Some(ref ph) = frame.query_plan_hash {
+                            stack_info.push_str(&format!(", plan hash: {}", ph));
+                        }
+                        if let Some(line) = frame.line {
+                            stack_info.push_str(&format!(", line {}", line));
+                        }
+                        recs.push(stack_info);
+                    }
+                }
+                for frame in &bpr.blocking_execution_stack {
+                    if let Some(ref qh) = frame.query_hash {
+                        let mut stack_info = format!("Blocker query hash: {}", qh);
+                        if let Some(ref ph) = frame.query_plan_hash {
+                            stack_info.push_str(&format!(", plan hash: {}", ph));
+                        }
+                        if let Some(line) = frame.line {
+                            stack_info.push_str(&format!(", line {}", line));
+                        }
+                        recs.push(stack_info);
+                    }
+                }
+            }
+            // When no BPRs but lock waits detected (lock_contention without blocked_process_report)
+            if bprs.is_empty() {
+                let lock_waits: Vec<&WaitTypeStat> = wait_stats.iter().filter(|w| w.category == "lock").collect();
+                let total_lock_dur: i64 = lock_waits.iter().map(|w| w.total_duration_us).sum();
+                let total_lock_count: usize = lock_waits.iter().map(|w| w.count).sum();
+                recs.push(format!(
+                    "{} lock wait(s) totaling {:.1}s detected. The query is competing for locks with other sessions.",
+                    total_lock_count, total_lock_dur as f64 / 1_000_000.0
+                ));
+                for ws in &lock_waits {
+                    recs.push(format!(
+                        "Wait type {} — {} occurrence(s), total {:.1}s, max {:.1}ms.",
+                        ws.wait_type, ws.count, ws.total_duration_us as f64 / 1_000_000.0, ws.max_duration_us as f64 / 1000.0
+                    ));
+                }
+                if let Some(reads) = anchor.logical_reads {
+                    if reads > 100_000 {
+                        recs.push(format!(
+                            "High logical reads ({}) amplify lock hold time — the query scans too much data, holding locks longer. Optimize with better indexes.",
+                            reads
+                        ));
+                    }
+                }
+                // Show correlated sessions that touched the same object
+                if !blocker_events.is_empty() {
+                    let anchor_sid = anchor.session_id;
+                    // Gather per-session info
+                    struct SessionInfo {
+                        lock_wait_count: usize,
+                        max_lock_wait_us: i64,
+                        total_lock_wait_us: i64,
+                        proc_name: Option<String>,
+                        sql_preview: Option<String>,
+                        app_name: Option<String>,
+                        username: Option<String>,
+                    }
+                    let mut session_map: HashMap<i64, SessionInfo> = HashMap::new();
+                    for ev in blocker_events {
+                        if let Some(sid) = ev.session_id {
+                            if Some(sid) == anchor_sid { continue; }
+                            let info = session_map.entry(sid).or_insert(SessionInfo {
+                                lock_wait_count: 0,
+                                max_lock_wait_us: 0,
+                                total_lock_wait_us: 0,
+                                proc_name: None,
+                                sql_preview: None,
+                                app_name: None,
+                                username: None,
+                            });
+                            // Count lock_acquired events (these mean the session was waiting for locks too)
+                            if ev.event_name == "lock_acquired" || ev.event_name == "locks_lock_waits" {
+                                if let Some(dur) = ev.duration_us {
+                                    if dur > 0 {
+                                        info.lock_wait_count += 1;
+                                        info.total_lock_wait_us += dur;
+                                        if dur > info.max_lock_wait_us {
+                                            info.max_lock_wait_us = dur;
+                                        }
+                                    }
+                                }
+                            }
+                            if info.proc_name.is_none() {
+                                if ev.event_name == "rpc_completed" || ev.event_name == "sql_batch_completed" {
+                                    info.proc_name = ev.object_name.clone();
+                                    info.sql_preview = ev.statement.clone().or_else(|| ev.sql_text.clone());
+                                }
+                            }
+                            if info.app_name.is_none() { info.app_name = ev.client_app_name.clone(); }
+                            if info.username.is_none() { info.username = ev.username.clone(); }
+                        }
+                    }
+
+                    let session_count = session_map.len();
+                    // Check if multiple sessions are all experiencing lock waits (hot table pattern)
+                    let sessions_also_waiting: usize = session_map.values()
+                        .filter(|i| i.lock_wait_count > 0)
+                        .count();
+
+                    if sessions_also_waiting > 1 {
+                        recs.push(format!(
+                            "{} other sessions were also waiting for locks on the same object — this is a hot table contention pattern where many concurrent operations compete for the same resource.",
+                            sessions_also_waiting
+                        ));
+                    } else if session_count > 0 {
+                        recs.push(format!(
+                            "{} other session(s) were accessing the same object concurrently.",
+                            session_count
+                        ));
+                    }
+
+                    // Show per-session details (sorted by total lock wait descending)
+                    let mut sorted_sessions: Vec<(i64, &SessionInfo)> = session_map.iter().map(|(&k, v)| (k, v)).collect();
+                    sorted_sessions.sort_by(|a, b| b.1.total_lock_wait_us.cmp(&a.1.total_lock_wait_us));
+
+                    for (sid, info) in sorted_sessions.iter().take(5) {
+                        let mut desc = format!("Session {}", sid);
+                        if let Some(ref user) = info.username {
+                            desc.push_str(&format!(" ({})", user));
+                        }
+                        if let Some(ref app) = info.app_name {
+                            desc.push_str(&format!(" [{}]", app));
+                        }
+                        if info.lock_wait_count > 0 {
+                            desc.push_str(&format!(
+                                " — also waiting for locks: {} wait(s), {:.1}s total, max {:.1}s",
+                                info.lock_wait_count,
+                                info.total_lock_wait_us as f64 / 1_000_000.0,
+                                info.max_lock_wait_us as f64 / 1_000_000.0
+                            ));
+                        }
+                        if let Some(ref proc_name) = info.proc_name {
+                            desc.push_str(&format!("\n  Proc: {}", proc_name));
+                        }
+                        if let Some(ref sql) = info.sql_preview {
+                            let preview: String = sql.chars().take(120).collect();
+                            desc.push_str(&format!("\n  SQL: {}", preview));
+                        }
+                        recs.push(desc);
+                    }
+                    if sorted_sessions.len() > 5 {
+                        recs.push(format!("...and {} more sessions.", sorted_sessions.len() - 5));
+                    }
+                }
+                if !has_snapshot_isolation {
+                    recs.push("Consider enabling Read Committed Snapshot Isolation (RCSI) to reduce reader-writer lock conflicts.".to_string());
+                }
+                recs.push("Check for long-running transactions that may be holding locks. Use sp_whoisactive or sys.dm_tran_active_transactions.".to_string());
+            }
         }
         "latch_contention" => {
             recs.push("PAGELATCH waits indicate in-memory contention on hot pages (last page insert, tempdb allocation).".to_string());
@@ -1974,8 +2779,10 @@ fn build_recommendations(
                 }
             }
         }
-        // If diagnosis is not lock but lock waits are present
-        if diagnosis != "lock_contention" && diagnosis != "lock_blocking" && lock_count > 0 {
+        // If diagnosis is not lock but lock waits are present.
+        // Skip when "no_waits" — the lock durations overlapped with CPU execution
+        // and didn't actually block the query.
+        if diagnosis != "lock_contention" && diagnosis != "lock_blocking" && diagnosis != "no_waits" && lock_count > 0 {
             let lock_dur: i64 = wait_stats.iter().filter(|w| w.category == "lock").map(|w| w.total_duration_us).sum();
             if lock_dur > 10_000 { // > 10ms
                 recs.push(format!(
@@ -2009,55 +2816,93 @@ fn build_analysis_summary(
     wait_stats: &[WaitTypeStat],
     diagnosis: &str,
     deadlocks: &[ParsedDeadlockGraph],
+    deadlock_id: Option<i64>,
+    deadlock_lock_events: &[XelEvent],
 ) -> String {
     let sid = anchor.session_id.map_or("-".to_string(), |s| s.to_string());
     let mut parts: Vec<String> = Vec::new();
+    let has_xml_graph = !deadlocks.is_empty();
+    let has_lock_events = deadlock_id.is_some() && !deadlock_lock_events.is_empty();
 
     // Diagnosis headline
     match diagnosis {
         "deadlock" => {
-            let dl_count = deadlocks.len();
-            let victim_count: usize = deadlocks.iter()
-                .flat_map(|dl| dl.processes.iter())
-                .filter(|p| p.is_victim)
-                .count();
-            let process_count: usize = deadlocks.iter().map(|dl| dl.processes.len()).sum();
-            parts.push(format!(
-                "DEADLOCK: {} deadlock(s) detected involving {} process(es), {} victim(s). Session {} was involved.",
-                dl_count, process_count, victim_count, sid
-            ));
-            // Show resource types
-            let resource_types: HashSet<String> = deadlocks.iter()
-                .flat_map(|dl| dl.resources.iter())
-                .map(|r| r.resource_type.clone())
-                .collect();
-            if !resource_types.is_empty() {
-                let types: Vec<String> = resource_types.into_iter().collect();
-                parts.push(format!("Contended resources: {}.", types.join(", ")));
+            if has_xml_graph {
+                let dl_count = deadlocks.len();
+                let victim_count: usize = deadlocks.iter()
+                    .flat_map(|dl| dl.processes.iter())
+                    .filter(|p| p.is_victim)
+                    .count();
+                let process_count: usize = deadlocks.iter().map(|dl| dl.processes.len()).sum();
+                parts.push(format!(
+                    "DEADLOCK: {} deadlock(s) detected involving {} process(es), {} victim(s). Session {} was involved.",
+                    dl_count, process_count, victim_count, sid
+                ));
+                let resource_types: HashSet<String> = deadlocks.iter()
+                    .flat_map(|dl| dl.resources.iter())
+                    .map(|r| r.resource_type.clone())
+                    .collect();
+                if !resource_types.is_empty() {
+                    let types: Vec<String> = resource_types.into_iter().collect();
+                    parts.push(format!("Contended resources: {}.", types.join(", ")));
+                }
+            } else if has_lock_events {
+                let did = deadlock_id.unwrap();
+                // Find other sessions in the deadlock
+                let other_sids: Vec<i64> = deadlock_lock_events.iter()
+                    .filter_map(|e| e.session_id)
+                    .filter(|s| Some(*s) != anchor.session_id)
+                    .collect::<HashSet<_>>()
+                    .into_iter()
+                    .collect();
+
+                if other_sids.is_empty() {
+                    parts.push(format!(
+                        "DEADLOCK (deadlock_id: {}). Session {} was the victim.",
+                        did, sid
+                    ));
+                } else {
+                    parts.push(format!(
+                        "DEADLOCK (deadlock_id: {}). Session {} (victim) vs Session {} (other participant).",
+                        did, sid, other_sids.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", ")
+                    ));
+                }
+
+                // Show lock details
+                let lock_modes: HashSet<String> = deadlock_lock_events.iter()
+                    .filter_map(|e| e.lock_mode.clone())
+                    .collect();
+                let resource_types: HashSet<String> = deadlock_lock_events.iter()
+                    .filter_map(|e| e.resource_type.clone())
+                    .collect();
+                let objects: HashSet<String> = deadlock_lock_events.iter()
+                    .filter_map(|e| e.object_name.clone()
+                        .or_else(|| e.extra_fields.get("resolved_object").and_then(|v| v.as_str()).map(String::from)))
+                    .collect();
+                let mut details = Vec::new();
+                if !objects.is_empty() {
+                    details.push(format!("objects: {}", objects.into_iter().collect::<Vec<_>>().join(", ")));
+                }
+                if !resource_types.is_empty() {
+                    details.push(format!("resource: {}", resource_types.into_iter().collect::<Vec<_>>().join(", ")));
+                }
+                if !lock_modes.is_empty() {
+                    details.push(format!("lock mode: {}", lock_modes.into_iter().collect::<Vec<_>>().join(", ")));
+                }
+                if !details.is_empty() {
+                    parts.push(format!("Deadlock on {}.", details.join(", ")));
+                }
             }
         }
         "likely_deadlock" => {
             parts.push(format!(
-                "Session {} was likely a DEADLOCK VICTIM. Error result with {:.1}s duration ({:.0}% waiting) — not a timeout pattern.",
+                "Session {} was likely a DEADLOCK VICTIM. Error result with {:.1}s duration ({:.0}% waiting).",
                 sid,
                 anchor.duration_us.unwrap_or(0) as f64 / 1_000_000.0,
                 anchor.cpu_time_us.map_or(0.0, |cpu| {
                     (1.0 - cpu as f64 / anchor.duration_us.unwrap_or(1) as f64) * 100.0
                 })
             ));
-            parts.push("No deadlock graph was captured — enable xml_deadlock_report in the XEvent session for full details.".to_string());
-        }
-        "timeout" => {
-            let dur_sec = anchor.duration_us.unwrap_or(0) / 1_000_000;
-            parts.push(format!(
-                "Session {} hit an execution timeout (~{}s). The query was terminated by the client because it exceeded the command timeout.",
-                sid, dur_sec
-            ));
-            if anchor.cpu_time_us.map_or(false, |cpu| {
-                anchor.duration_us.unwrap_or(0) > cpu * 3
-            }) {
-                parts.push("Most time was spent waiting (not CPU) — likely blocked by another session or waiting on IO.".to_string());
-            }
         }
         "io_starvation" => {
             let total_io_us: i64 = wait_stats.iter()
@@ -2074,20 +2919,42 @@ fn build_analysis_summary(
             ));
         }
         "lock_blocking" => {
-            let root_blockers: Vec<&BlockingChainLink> = chain.iter().filter(|l| l.role == "root_blocker").collect();
-            if let Some(root) = root_blockers.first() {
-                parts.push(format!(
-                    "Session {} is blocked by Session {} (root blocker).",
-                    sid, root.session_id
-                ));
-                if let Some(ref sql) = root.sql_preview {
-                    let preview: String = sql.chars().take(100).collect();
-                    parts.push(format!("Blocker is running: {}", preview));
-                }
-            }
+            // Use BPR data for summary (more accurate than chain for BPR anchor events)
             if let Some(bpr) = bprs.first() {
+                let blocked = bpr.blocked_spid.map_or("-".to_string(), |s| s.to_string());
+                let blocker = bpr.blocking_spid.map_or("-".to_string(), |s| s.to_string());
+                parts.push(format!(
+                    "Session {} is blocked by Session {}.",
+                    blocked, blocker
+                ));
                 if let Some(ref res) = bpr.blocked_wait_resource {
                     parts.push(format!("Contended resource: {}", res));
+                }
+                if let Some(ref lm) = bpr.blocked_lock_mode {
+                    parts.push(format!("Lock mode requested: {}", lm));
+                }
+                if let Some(wt) = bpr.blocked_wait_time_ms {
+                    parts.push(format!("Wait time: {}ms.", wt));
+                }
+                if let Some(ref sql) = bpr.blocking_input_buffer {
+                    let preview: String = sql.chars().take(150).collect();
+                    parts.push(format!("Blocker SQL: {}", preview));
+                }
+                if let Some(ref sql) = bpr.blocked_input_buffer {
+                    let preview: String = sql.chars().take(150).collect();
+                    parts.push(format!("Victim SQL: {}", preview));
+                }
+            } else {
+                let root_blockers: Vec<&BlockingChainLink> = chain.iter().filter(|l| l.role == "root_blocker").collect();
+                if let Some(root) = root_blockers.first() {
+                    parts.push(format!(
+                        "Session {} is blocked by Session {} (root blocker).",
+                        sid, root.session_id
+                    ));
+                    if let Some(ref sql) = root.sql_preview {
+                        let preview: String = sql.chars().take(100).collect();
+                        parts.push(format!("Blocker is running: {}", preview));
+                    }
                 }
             }
         }

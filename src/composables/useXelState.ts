@@ -135,7 +135,8 @@ export const useXelState = () => {
       f.timeFrom !== null ||
       f.timeTo !== null ||
       f.result !== null ||
-      f.errorsOnly
+      f.errorsOnly ||
+      f.deadlocksOnly
     );
   });
 

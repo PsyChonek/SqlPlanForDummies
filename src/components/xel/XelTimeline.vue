@@ -4,7 +4,7 @@ import * as d3 from 'd3';
 import { useXelState } from '../../composables/useXelState';
 import * as xelApi from '../../composables/xelTauriApi';
 import type { XelEvent } from '../../types/xel';
-import { getEventSeverityColor, getEventSeverity, formatDuration, formatTimestamp } from '../../types/xel';
+import { getEventSeverityColor, getEventSeverity, formatDuration, formatTimestamp, getLockModeDescription } from '../../types/xel';
 
 const { state, selectEvent } = useXelState();
 
@@ -469,7 +469,7 @@ onUnmounted(() => { resizeObserver?.disconnect(); });
           <span>Wait</span><span class="text-orange-300">{{ tooltip.event.waitType }}</span>
         </template>
         <template v-if="tooltip.event.lockMode">
-          <span>Lock</span><span class="text-yellow-300">{{ tooltip.event.lockMode }}</span>
+          <span>Lock</span><span class="text-yellow-300" :title="getLockModeDescription(tooltip.event.lockMode) ?? ''">{{ tooltip.event.lockMode }}<span v-if="getLockModeDescription(tooltip.event.lockMode)" class="text-yellow-300/50 text-[9px] ml-1">{{ getLockModeDescription(tooltip.event.lockMode)?.split('—')[0]?.trim() }}</span></span>
         </template>
       </div>
       <button

@@ -110,6 +110,7 @@ pub async fn xel_load_files(
         text_search: None,
         result: None,
         errors_only: false,
+        deadlocks_only: false,
     };
     let stats = store.get_stats(&empty_filter);
 
@@ -382,6 +383,33 @@ pub async fn xel_enrich_from_db(
         }
     }
 
+    // 1b. Fetch database isolation settings (RCSI, snapshot isolation)
+    {
+        let sql = "SELECT name, \
+            CAST(is_read_committed_snapshot_on AS CHAR(1)) + ',' + \
+            CAST(CASE WHEN snapshot_isolation_state IN (1,3) THEN 1 ELSE 0 END AS CHAR(1)) \
+            FROM sys.databases WITH (NOLOCK)";
+        match run_query_pairs(conn, sql).await {
+            Ok(pairs) => {
+                let mut settings: std::collections::HashMap<String, super::types::DbSettings> = std::collections::HashMap::new();
+                for (db_name, flags) in pairs {
+                    let parts: Vec<&str> = flags.split(',').collect();
+                    if parts.len() == 2 {
+                        settings.insert(db_name, super::types::DbSettings {
+                            is_read_committed_snapshot_on: parts[0] == "1",
+                            snapshot_isolation_on: parts[1] == "1",
+                        });
+                    }
+                }
+                if !settings.is_empty() {
+                    let mut store = xel_state.store.write().await;
+                    store.set_db_settings(settings);
+                }
+            }
+            Err(e) => errors.push(format!("DB settings: {}", e)),
+        }
+    }
+
     // 2. Resolve associated_object_id → schema.table.index
     {
         let obj_ids = {
@@ -432,6 +460,46 @@ pub async fn xel_enrich_from_db(
         if !cached_objs.is_empty() {
             let mut store = xel_state.store.write().await;
             objects_resolved = store.apply_object_names(&cached_objs);
+        }
+    }
+
+    // 2b. Resolve direct object_ids (from OBJECT: wait_resource, BPR) via sys.objects
+    {
+        let direct_obj_ids = {
+            let store = xel_state.store.read().await;
+            store.collect_direct_object_ids()
+        };
+        // Filter to IDs not already resolved by hobt_id lookup
+        let uncached: Vec<i64> = direct_obj_ids.iter()
+            .filter(|id| !cached_objs.contains_key(id))
+            .cloned()
+            .collect();
+
+        if !uncached.is_empty() {
+            for chunk in uncached.chunks(100) {
+                let id_list: String = chunk.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
+                let sql = format!(
+                    "SELECT o.object_id, SCHEMA_NAME(o.schema_id) + '.' + o.name \
+                     FROM sys.objects o WITH (NOLOCK) \
+                     WHERE o.object_id IN ({})",
+                    id_list
+                );
+                match run_query_pairs(conn, &sql).await {
+                    Ok(pairs) => {
+                        for (id_str, name) in pairs {
+                            if let Ok(id) = id_str.parse::<i64>() {
+                                cached_objs.insert(id, name);
+                                cache_dirty = true;
+                            }
+                        }
+                    }
+                    Err(e) => { errors.push(format!("Direct object names: {}", e)); break; }
+                }
+            }
+        }
+        if !cached_objs.is_empty() {
+            let mut store = xel_state.store.write().await;
+            objects_resolved += store.apply_direct_object_names(&cached_objs);
         }
     }
 

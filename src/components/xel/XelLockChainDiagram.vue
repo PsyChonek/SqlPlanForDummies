@@ -4,8 +4,9 @@ import * as d3 from 'd3';
 import { useXelState } from '../../composables/useXelState';
 import * as xelApi from '../../composables/xelTauriApi';
 import type { XelEvent, BlockingAnalysis } from '../../types/xel';
+import { getLockModeDescription } from '../../types/xel';
 
-const { state, selectSession } = useXelState();
+const { state, clearFilter, setFilter } = useXelState();
 
 const viewport = ref<HTMLDivElement>();
 let resizeObserver: ResizeObserver | null = null;
@@ -506,6 +507,10 @@ const renderGraph = async () => {
     const linkLabels = g.selectAll('.link-label').data(simEdges.filter(e => e.mode)).join('text')
       .attr('fill', '#94a3b8').attr('font-size', '9px').attr('text-anchor', 'middle')
       .text(d => `${d.mode}${d.count > 1 ? ` x${d.count}` : ''}`);
+    linkLabels.each(function(d) {
+      const desc = getLockModeDescription(d.mode);
+      if (desc) d3.select(this).append('title').text(`${d.mode}: ${desc}`);
+    });
 
     let dragged = false;
 
@@ -696,7 +701,7 @@ onUnmounted(() => { resizeObserver?.disconnect(); });
       >{{ tooltip.node.sqlPreview.substring(0, 200) }}{{ tooltip.node.sqlPreview.length > 200 ? '…' : '' }}</div>
       <button
         v-if="tooltip.node.type === 'session' && tooltip.node.sessionId"
-        @click="selectSession(tooltip.node.sessionId!); tooltip = null"
+        @click="clearFilter(); setFilter({ textSearch: `session_id:${tooltip.node.sessionId}` }); tooltip = null"
         class="mt-2 w-full px-2 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-xs transition-colors"
       >
         <i class="fa-solid fa-filter mr-1"></i>Filter by Session {{ tooltip.node.sessionId }}

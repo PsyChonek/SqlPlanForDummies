@@ -10,14 +10,11 @@ const showConnectionDialog = ref(false);
 <template>
   <div class="w-screen h-screen flex flex-col bg-slate-900 overflow-hidden">
     <!-- Header -->
-    <header class="flex items-center justify-between px-6 py-4 bg-gradient-to-r from-indigo-900 to-purple-900 border-b-2 border-indigo-500 shadow-lg">
-      <div>
-        <h1 class="text-2xl font-black text-white tracking-tight">
-          <i class="fa-solid fa-diagram-project mr-2 text-indigo-400"></i>
-          SQL Execution Plan Analyzer
-        </h1>
-        <p class="text-sm text-indigo-200 mt-0.5">Interactive Query Performance Visualization</p>
-      </div>
+    <header class="flex items-center justify-between px-4 py-1.5 bg-gradient-to-r from-indigo-900 to-purple-900 border-b border-indigo-500">
+      <h1 class="text-sm font-bold text-white tracking-tight">
+        <i class="fa-solid fa-diagram-project mr-1.5 text-indigo-400"></i>
+        SQL Plan For Dummies
+      </h1>
       <div class="flex items-center gap-3">
         <!-- Connection Status (clickable) -->
         <button

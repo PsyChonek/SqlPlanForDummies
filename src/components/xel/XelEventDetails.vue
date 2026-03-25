@@ -5,16 +5,175 @@ import * as xelApi from '../../composables/xelTauriApi';
 import {
   getEventSeverity, getEventSeverityColor, getEventIcon,
   formatDuration, formatNumber, formatTimestampFull,
+  getLockModeDescription,
 } from '../../types/xel';
 import type { BlockingAnalysis, TransactionObject, XelEvent } from '../../types/xel';
 
-const { state, selectEvent, selectSession } = useXelState();
+const { state, selectEvent, setFilter, clearFilter } = useXelState();
 
 const copied = ref('');
 const copyText = async (text: string, label: string) => {
   await navigator.clipboard.writeText(text);
   copied.value = label;
   setTimeout(() => { copied.value = ''; }, 1500);
+};
+
+const buildLlmPrompt = (): string => {
+  const ev = state.selectedEvent;
+  if (!ev) return '';
+
+  const lines: string[] = [];
+  lines.push('# SQL Server Extended Events - Event Analysis');
+  lines.push('');
+  lines.push('## Event');
+  lines.push(`- **Event Name:** ${ev.eventName}`);
+  lines.push(`- **Timestamp:** ${ev.timestamp}`);
+  lines.push(`- **Event ID:** ${ev.id}`);
+  if (ev.sessionId !== null) lines.push(`- **Session ID:** ${ev.sessionId}`);
+  if (ev.databaseName) lines.push(`- **Database:** ${ev.databaseName}`);
+  if (ev.username) lines.push(`- **User:** ${ev.username}`);
+  if (ev.clientAppName) lines.push(`- **Application:** ${ev.clientAppName}`);
+  if (ev.objectName) lines.push(`- **Object:** ${ev.objectName}`);
+  if (ev.result) lines.push(`- **Result:** ${ev.result}`);
+  lines.push(`- **Source File:** ${ev.sourceFile}`);
+
+  // Performance
+  if (ev.durationUs !== null || ev.logicalReads !== null) {
+    lines.push('');
+    lines.push('## Performance');
+    if (ev.durationUs !== null) lines.push(`- **Duration:** ${formatDuration(ev.durationUs)} (${ev.durationUs} µs)`);
+    if (ev.cpuTimeUs !== null) lines.push(`- **CPU Time:** ${formatDuration(ev.cpuTimeUs)} (${ev.cpuTimeUs} µs)`);
+    if (ev.durationUs !== null && ev.cpuTimeUs !== null && ev.durationUs > ev.cpuTimeUs * 2) {
+      lines.push(`- **Wait Ratio:** ${Math.round((1 - ev.cpuTimeUs / ev.durationUs) * 100)}% waiting`);
+    }
+    if (ev.logicalReads !== null) lines.push(`- **Logical Reads:** ${ev.logicalReads.toLocaleString()}`);
+    if (ev.physicalReads !== null) lines.push(`- **Physical Reads:** ${ev.physicalReads.toLocaleString()}`);
+    if (ev.writes !== null) lines.push(`- **Writes:** ${ev.writes.toLocaleString()}`);
+  }
+
+  // Lock / Wait
+  if (ev.resourceType || ev.lockMode || ev.waitType || ev.waitDurationMs !== null) {
+    lines.push('');
+    lines.push('## Lock / Wait Information');
+    if (ev.waitType) lines.push(`- **Wait Type:** ${ev.waitType}`);
+    if (ev.resourceType) lines.push(`- **Resource Type:** ${ev.resourceType}`);
+    if (ev.lockMode) {
+      const desc = getLockModeDescription(ev.lockMode);
+      lines.push(`- **Lock Mode:** ${ev.lockMode}${desc ? ` (${desc})` : ''}`);
+    }
+    if (ev.resourceDescription) lines.push(`- **Resource Description:** ${ev.resourceDescription}`);
+    if (ev.waitDurationMs !== null) lines.push(`- **Wait Duration:** ${ev.waitDurationMs}ms`);
+    if (ev.extraFields['wait_resource']) lines.push(`- **Wait Resource:** ${ev.extraFields['wait_resource']}`);
+    if (ev.extraFields['resolved_wait_object']) lines.push(`- **Resolved Wait Object:** ${ev.extraFields['resolved_wait_object']}`);
+    if (ev.extraFields['resolved_object']) lines.push(`- **Resolved Object:** ${ev.extraFields['resolved_object']}`);
+  }
+
+  // SQL
+  if (ev.statement || ev.sqlText) {
+    lines.push('');
+    lines.push('## SQL Text');
+    lines.push('```sql');
+    lines.push(ev.statement || ev.sqlText || '');
+    lines.push('```');
+  }
+
+  // Deadlock graph
+  if (ev.deadlockGraph) {
+    lines.push('');
+    lines.push('## Deadlock Graph (XML)');
+    lines.push('```xml');
+    lines.push(ev.deadlockGraph);
+    lines.push('```');
+  }
+
+  // Blocked process report
+  if (ev.blockedProcessReport) {
+    lines.push('');
+    lines.push('## Blocked Process Report (XML)');
+    lines.push('```xml');
+    lines.push(ev.blockedProcessReport);
+    lines.push('```');
+  }
+
+  // Extra fields
+  const extras = Object.entries(ev.extraFields);
+  if (extras.length > 0) {
+    lines.push('');
+    lines.push('## Additional Fields');
+    for (const [key, val] of extras) {
+      lines.push(`- **${key}:** ${val}`);
+    }
+  }
+
+  // Blocking analysis
+  const a = analysis.value;
+  if (a) {
+    lines.push('');
+    lines.push('## Blocking Analysis');
+    lines.push(`- **Summary:** ${a.summary}`);
+    if (a.diagnosis && a.diagnosis !== 'no_waits') lines.push(`- **Diagnosis:** ${diagnosisLabel(a.diagnosis)}`);
+
+    if (a.blockingChain.length > 0) {
+      lines.push('');
+      lines.push('### Blocking Chain');
+      for (const link of a.blockingChain) {
+        lines.push(`- **Session ${link.sessionId}** — Role: ${roleLabel(link.role)}${link.blockedBySession ? `, blocked by Session ${link.blockedBySession}` : ''}`);
+        if (link.lockMode) lines.push(`  - Lock Mode: ${link.lockMode}`);
+        if (link.waitResource) lines.push(`  - Wait Resource: ${link.waitResource}`);
+        if (link.database) lines.push(`  - Database: ${link.database}`);
+        if (link.appName) lines.push(`  - App: ${link.appName}`);
+        if (link.username) lines.push(`  - User: ${link.username}`);
+        if (link.sqlPreview) lines.push(`  - SQL: \`${link.sqlPreview}\``);
+      }
+    }
+
+    if (a.blockedProcessReports.length > 0) {
+      lines.push('');
+      lines.push('### Blocked Process Reports');
+      for (const bpr of a.blockedProcessReports) {
+        lines.push(`- **S${bpr.blockedSpid} blocked by S${bpr.blockingSpid}**`);
+        if (bpr.blockedWaitResource) lines.push(`  - Wait Resource: ${bpr.blockedWaitResource}`);
+        if (bpr.blockedWaitTimeMs) lines.push(`  - Wait Time: ${bpr.blockedWaitTimeMs}ms`);
+        if (bpr.blockedLockMode) lines.push(`  - Victim Lock Mode: ${bpr.blockedLockMode}`);
+        if (bpr.blockedIsolationLevel) lines.push(`  - Victim Isolation: ${bpr.blockedIsolationLevel}`);
+        if (bpr.blockingIsolationLevel) lines.push(`  - Blocker Isolation: ${bpr.blockingIsolationLevel}`);
+        if (bpr.blockingStatus) lines.push(`  - Blocker Status: ${bpr.blockingStatus}`);
+        if (bpr.blockingInputBuffer) lines.push(`  - Blocker SQL: \`${bpr.blockingInputBuffer}\``);
+        if (bpr.blockedInputBuffer) lines.push(`  - Victim SQL: \`${bpr.blockedInputBuffer}\``);
+      }
+    }
+
+    if (a.waitStats.length > 0) {
+      lines.push('');
+      lines.push('### Wait Statistics');
+      for (const ws of a.waitStats) {
+        lines.push(`- **${ws.waitType}** (${ws.category}): count=${ws.count}, total=${formatDuration(ws.totalDurationUs)}, max=${formatDuration(ws.maxDurationUs)}, avg=${formatDuration(ws.avgDurationUs)}`);
+      }
+    }
+
+    if (a.recommendations.length > 0) {
+      lines.push('');
+      lines.push('### Recommendations');
+      for (const rec of a.recommendations) {
+        lines.push(`- ${rec}`);
+      }
+    }
+  }
+
+  // Related objects
+  if (txnObjects.value.length > 0) {
+    lines.push('');
+    lines.push('## Related Objects (same session/transaction)');
+    for (const obj of txnObjects.value) {
+      lines.push(`- **${obj.objectName}** — ${obj.eventCount} events, locks: ${obj.lockModes.join(', ') || 'none'}`);
+    }
+  }
+
+  lines.push('');
+  lines.push('---');
+  lines.push('Please analyze this event and help me understand what happened, why, and what I can do to fix or prevent it.');
+
+  return lines.join('\n');
 };
 
 // Extra fields search
@@ -92,17 +251,32 @@ const needsObjectCorrelation = (event: XelEvent | null): boolean => {
 
 watch(() => state.selectedEvent, async (event) => {
   txnObjects.value = [];
-  if (event && needsObjectCorrelation(event)) {
+  analysis.value = null;
+  showAnalysis.value = false;
+  analysisError.value = null;
+
+  if (!event) return;
+
+  if (needsObjectCorrelation(event)) {
     txnObjectsLoading.value = true;
     try {
       txnObjects.value = await xelApi.getTransactionObjects(event.id);
     } catch { /* ignore */ }
     txnObjectsLoading.value = false;
   }
+
+  if (isBlockingRelated(event)) {
+    loadAnalysis();
+  }
 });
 
 const filterBySession = (sessionId: number) => {
-  selectSession(sessionId);
+  filterByColumn('session_id', String(sessionId));
+};
+
+const filterByColumn = (column: string, value: string) => {
+  clearFilter();
+  setFilter({ textSearch: `${column}:${value}` });
 };
 
 const roleColor = (role: string) => {
@@ -136,7 +310,6 @@ const diagnosisLabel = (d: string) => {
   const labels: Record<string, string> = {
     deadlock: 'Deadlock',
     likely_deadlock: 'Likely Deadlock Victim',
-    timeout: 'Execution Timeout',
     io_starvation: 'IO Starvation (Disk)',
     lock_blocking: 'Lock Blocking',
     lock_contention: 'Lock Contention',
@@ -194,12 +367,6 @@ const waitCategoryBreakdown = computed(() => {
     .sort((a, b) => b.pct - a.pct);
 });
 
-// Reset analysis when selected event changes
-watch(() => state.selectedEvent?.id, () => {
-  analysis.value = null;
-  showAnalysis.value = false;
-  analysisError.value = null;
-});
 </script>
 
 <template>
@@ -212,9 +379,18 @@ watch(() => state.selectedEvent?.id, () => {
             :class="['fa-solid', getEventIcon(state.selectedEvent.eventName)]"
             :style="{ color: getEventSeverityColor(getEventSeverity(state.selectedEvent)) }"
           ></i>
-          <h3 class="text-sm font-semibold text-slate-200 truncate">
+          <h3 class="text-sm font-semibold text-slate-200 truncate flex-1">
             {{ state.selectedEvent.eventName }}
           </h3>
+          <button
+            @click="copyText(buildLlmPrompt(), 'llm')"
+            class="shrink-0 flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-colors"
+            :class="copied === 'llm' ? 'bg-green-600/30 text-green-300' : 'bg-indigo-600/30 text-indigo-300 hover:bg-indigo-600/50 hover:text-indigo-200'"
+            title="Copy all event details formatted for LLM analysis"
+          >
+            <i :class="copied === 'llm' ? 'fa-solid fa-check' : 'fa-solid fa-robot'" class="text-[10px]"></i>
+            {{ copied === 'llm' ? 'Copied!' : 'Copy for AI' }}
+          </button>
         </div>
         <p class="text-xs text-slate-400 mt-1">
           {{ formatTimestampFull(state.selectedEvent.timestamp) }}
@@ -223,20 +399,12 @@ watch(() => state.selectedEvent?.id, () => {
 
       <!-- Metrics -->
       <div class="flex-1 overflow-auto px-4 py-3 space-y-3">
-        <!-- Investigate Blocking button -->
+        <!-- Blocking Analysis (auto-loaded) -->
         <div v-if="isBlockingRelated(state.selectedEvent)">
-          <button
-            v-if="!showAnalysis"
-            @click="loadAnalysis"
-            :disabled="analysisLoading"
-            class="w-full px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
-            :class="analysisLoading
-              ? 'bg-slate-700 text-slate-400 cursor-wait'
-              : 'bg-indigo-600 hover:bg-indigo-500 text-white'"
-          >
-            <i :class="analysisLoading ? 'fa-solid fa-spinner fa-spin' : 'fa-solid fa-magnifying-glass-chart'"></i>
-            {{ analysisLoading ? 'Analyzing...' : 'Investigate Blocking' }}
-          </button>
+          <div v-if="analysisLoading" class="flex items-center gap-2 text-xs text-slate-400 py-1">
+            <i class="fa-solid fa-spinner fa-spin text-[10px]"></i>
+            Analyzing blocking...
+          </div>
 
           <!-- Analysis Results -->
           <div v-if="showAnalysis && analysis" class="space-y-3">
@@ -306,7 +474,7 @@ watch(() => state.selectedEvent?.id, () => {
                         </template>
                         <template v-if="proc.lockMode">
                           <span>Lock mode</span>
-                          <span class="text-yellow-300">{{ proc.lockMode }}</span>
+                          <span class="text-yellow-300" :title="getLockModeDescription(proc.lockMode) ?? ''">{{ proc.lockMode }}<span v-if="getLockModeDescription(proc.lockMode)" class="text-yellow-300/50 text-[9px] ml-1">{{ getLockModeDescription(proc.lockMode) }}</span></span>
                         </template>
                         <template v-if="proc.isolationLevel">
                           <span>Isolation</span>
@@ -372,6 +540,118 @@ watch(() => state.selectedEvent?.id, () => {
               </div>
             </div>
 
+            <!-- Deadlock Lock Events (confirmed via deadlock_id) -->
+            <div v-if="analysis.deadlockId && analysis.deadlockLockEvents.length > 0">
+              <h5 class="text-xs font-semibold text-red-400 uppercase tracking-wider mb-1.5">
+                <i class="fa-solid fa-skull-crossbones mr-1 text-[10px]"></i>
+                Deadlock Lock Events
+                <span class="text-red-300/70 font-normal ml-1">(deadlock_id: {{ analysis.deadlockId }})</span>
+              </h5>
+              <div class="space-y-1.5">
+                <div
+                  v-for="ev in analysis.deadlockLockEvents"
+                  :key="ev.id"
+                  class="bg-red-950/20 border border-red-800/30 rounded-lg px-3 py-2 text-xs"
+                >
+                  <div class="flex items-center justify-between mb-1">
+                    <div class="flex items-center gap-1.5">
+                      <i
+                        :class="['fa-solid', getEventIcon(ev.eventName)]"
+                        :style="{ color: getEventSeverityColor(getEventSeverity(ev)) }"
+                        class="text-[10px]"
+                      ></i>
+                      <span class="text-red-300 font-semibold">{{ ev.eventName }}</span>
+                      <span class="text-slate-400">Session {{ ev.sessionId ?? '?' }}</span>
+                    </div>
+                    <button
+                      @click="jumpToEvent(ev.id)"
+                      class="text-[10px] text-indigo-400 hover:text-indigo-300"
+                    >
+                      #{{ ev.id }}
+                    </button>
+                  </div>
+                  <div class="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-slate-400">
+                    <template v-if="ev.resourceType">
+                      <span>Resource Type</span>
+                      <span class="text-yellow-300 font-medium">{{ ev.resourceType }}</span>
+                    </template>
+                    <template v-if="ev.lockMode">
+                      <span>Lock Mode</span>
+                      <span class="text-yellow-300" :title="getLockModeDescription(ev.lockMode) ?? ''">{{ ev.lockMode }}<span v-if="getLockModeDescription(ev.lockMode)" class="text-yellow-300/50 text-[9px] ml-1">{{ getLockModeDescription(ev.lockMode) }}</span></span>
+                    </template>
+                    <template v-if="ev.objectName">
+                      <span>Object</span>
+                      <span class="text-slate-300">{{ ev.objectName }}</span>
+                    </template>
+                    <template v-if="ev.resourceDescription">
+                      <span>Resource</span>
+                      <span class="text-slate-300 font-mono text-[10px]">{{ ev.resourceDescription }}</span>
+                    </template>
+                    <template v-if="ev.durationUs !== null">
+                      <span>Duration</span>
+                      <span class="text-slate-300">{{ formatDuration(ev.durationUs) }}</span>
+                    </template>
+                    <template v-if="ev.databaseName">
+                      <span>Database</span>
+                      <span class="text-slate-300">{{ ev.databaseName }}</span>
+                    </template>
+                    <template v-if="ev.username">
+                      <span>User</span>
+                      <span class="text-slate-300">{{ ev.username }}</span>
+                    </template>
+                    <template v-if="ev.extraFields['owner_type']">
+                      <span>Owner Type</span>
+                      <span class="text-slate-300">{{ ev.extraFields['owner_type'] }}</span>
+                    </template>
+                  </div>
+                  <!-- Show all extra fields for this deadlock event -->
+                  <details class="mt-1.5">
+                    <summary class="text-[10px] text-slate-500 hover:text-slate-300 cursor-pointer">
+                      All fields ({{ Object.keys(ev.extraFields).length }})
+                    </summary>
+                    <div class="mt-1 space-y-0 max-h-32 overflow-auto">
+                      <div
+                        v-for="[key, val] in Object.entries(ev.extraFields)"
+                        :key="key"
+                        class="grid grid-cols-[1fr_2fr] gap-1 text-[10px] border-b border-slate-700/50 py-0.5"
+                      >
+                        <span class="text-slate-500 font-mono">{{ key }}</span>
+                        <span class="text-slate-300 font-mono break-all">{{ val }}</span>
+                      </div>
+                    </div>
+                  </details>
+                  <!-- SQL Text if available -->
+                  <div v-if="ev.sqlText || ev.statement" class="mt-1.5">
+                    <pre class="text-[10px] text-red-300/70 font-mono bg-red-950/40 px-2 py-1 rounded overflow-auto max-h-16 whitespace-pre-wrap break-all">{{ ev.statement || ev.sqlText }}</pre>
+                  </div>
+                  <div class="mt-1 flex flex-wrap gap-2">
+                    <button
+                      v-if="ev.extraFields['attach_activity_id']"
+                      @click="filterByColumn('attach_activity_id', String(ev.extraFields['attach_activity_id']).split(':')[0])"
+                      class="text-[10px] text-indigo-400 hover:text-indigo-300"
+                      :title="String(ev.extraFields['attach_activity_id']).split(':')[0]"
+                    >
+                      <i class="fa-solid fa-link mr-0.5"></i>Activity
+                    </button>
+                    <button
+                      v-if="ev.extraFields['transaction_id']"
+                      @click="filterByColumn('transaction_id', String(ev.extraFields['transaction_id']))"
+                      class="text-[10px] text-slate-500 hover:text-slate-300"
+                    >
+                      <i class="fa-solid fa-filter mr-0.5"></i>Txn
+                    </button>
+                    <button
+                      v-if="ev.extraFields['deadlock_id']"
+                      @click="filterByColumn('deadlock_id', String(ev.extraFields['deadlock_id']))"
+                      class="text-[10px] text-red-400 hover:text-red-300"
+                    >
+                      <i class="fa-solid fa-skull-crossbones mr-0.5"></i>Deadlock
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <!-- Blocking Chain -->
             <div v-if="analysis.blockingChain.length > 0">
               <h5 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Blocking Chain</h5>
@@ -409,7 +689,7 @@ watch(() => state.selectedEvent?.id, () => {
                     </template>
                     <template v-if="link.lockMode">
                       <span>Lock mode</span>
-                      <span class="text-yellow-300">{{ link.lockMode }}</span>
+                      <span class="text-yellow-300" :title="getLockModeDescription(link.lockMode) ?? ''">{{ link.lockMode }}<span v-if="getLockModeDescription(link.lockMode)" class="text-yellow-300/50 text-[9px] ml-1">{{ getLockModeDescription(link.lockMode) }}</span></span>
                     </template>
                     <template v-if="link.appName">
                       <span>App</span>
@@ -427,7 +707,8 @@ watch(() => state.selectedEvent?.id, () => {
                   </div>
 
                   <!-- Jump to events -->
-                  <div v-if="link.eventIds.length > 0" class="mt-1.5 flex flex-wrap gap-1">
+                  <div v-if="link.eventIds.length > 0" class="mt-1.5 flex flex-wrap items-center gap-1">
+                    <span class="text-[10px] text-slate-500">Session events:</span>
                     <button
                       v-for="eid in link.eventIds.slice(0, 5)"
                       :key="eid"
@@ -470,7 +751,9 @@ watch(() => state.selectedEvent?.id, () => {
                   <div class="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-slate-400">
                     <template v-if="bpr.blockedWaitResource">
                       <span>Wait resource</span>
-                      <span class="text-yellow-300 font-mono text-[10px]">{{ bpr.blockedWaitResource }}</span>
+                      <span class="text-yellow-300 font-mono text-[10px]">
+                        {{ state.selectedEvent?.extraFields['resolved_wait_resource'] || bpr.blockedWaitResource }}
+                      </span>
                     </template>
                     <template v-if="bpr.blockedWaitTimeMs">
                       <span>Wait time</span>
@@ -480,6 +763,14 @@ watch(() => state.selectedEvent?.id, () => {
                       <span>Lock mode</span>
                       <span class="text-yellow-300">{{ bpr.blockedLockMode }}</span>
                     </template>
+                    <template v-if="bpr.blockedIsolationLevel">
+                      <span>Victim isolation</span>
+                      <span class="text-slate-300">{{ bpr.blockedIsolationLevel }}</span>
+                    </template>
+                    <template v-if="bpr.blockedTranCount">
+                      <span>Victim tran count</span>
+                      <span class="text-slate-300">{{ bpr.blockedTranCount }}</span>
+                    </template>
                     <template v-if="bpr.blockingStatus">
                       <span>Blocker status</span>
                       <span class="text-slate-300">{{ bpr.blockingStatus }}</span>
@@ -487,6 +778,35 @@ watch(() => state.selectedEvent?.id, () => {
                     <template v-if="bpr.blockingLastBatchStarted">
                       <span>Blocker started</span>
                       <span class="text-slate-300">{{ bpr.blockingLastBatchStarted }}</span>
+                    </template>
+                    <template v-if="bpr.blockingIsolationLevel">
+                      <span>Blocker isolation</span>
+                      <span class="text-slate-300">{{ bpr.blockingIsolationLevel }}</span>
+                    </template>
+                    <template v-if="bpr.blockingTranCount">
+                      <span>Blocker tran count</span>
+                      <span class="text-slate-300">{{ bpr.blockingTranCount }}</span>
+                    </template>
+                  </div>
+                  <!-- Execution Stack -->
+                  <div v-if="bpr.blockedExecutionStack.some(f => f.queryHash)" class="mt-1.5">
+                    <span class="text-slate-500 text-[10px]">Victim execution stack:</span>
+                    <template v-for="(frame, fi) in bpr.blockedExecutionStack" :key="fi">
+                      <div v-if="frame.queryHash" class="text-[10px] font-mono text-slate-400 bg-slate-900/40 px-2 py-0.5 rounded mt-0.5">
+                        <span class="text-indigo-300">{{ frame.queryHash }}</span>
+                        <span v-if="frame.queryPlanHash" class="text-slate-500 ml-1">plan: {{ frame.queryPlanHash }}</span>
+                        <span v-if="frame.line" class="text-slate-500 ml-1">line {{ frame.line }}</span>
+                      </div>
+                    </template>
+                  </div>
+                  <div v-if="bpr.blockingExecutionStack.some(f => f.queryHash)" class="mt-1">
+                    <span class="text-slate-500 text-[10px]">Blocker execution stack:</span>
+                    <template v-for="(frame, fi) in bpr.blockingExecutionStack" :key="fi">
+                      <div v-if="frame.queryHash" class="text-[10px] font-mono text-slate-400 bg-slate-900/40 px-2 py-0.5 rounded mt-0.5">
+                        <span class="text-red-300">{{ frame.queryHash }}</span>
+                        <span v-if="frame.queryPlanHash" class="text-slate-500 ml-1">plan: {{ frame.queryPlanHash }}</span>
+                        <span v-if="frame.line" class="text-slate-500 ml-1">line {{ frame.line }}</span>
+                      </div>
                     </template>
                   </div>
                   <!-- Blocker's SQL -->
@@ -551,7 +871,6 @@ watch(() => state.selectedEvent?.id, () => {
                 <i :class="[
                   'fa-solid mr-1 text-[10px]',
                   analysis.diagnosis === 'deadlock' || analysis.diagnosis === 'likely_deadlock' ? 'fa-skull-crossbones text-red-400' :
-                  analysis.diagnosis === 'timeout' ? 'fa-clock text-orange-400' :
                   analysis.diagnosis === 'io_starvation' ? 'fa-hard-drive text-blue-400' :
                   analysis.diagnosis.startsWith('lock') ? 'fa-lock text-red-400' :
                   analysis.diagnosis === 'latch_contention' ? 'fa-bolt text-amber-400' :
@@ -701,7 +1020,7 @@ watch(() => state.selectedEvent?.id, () => {
             </template>
             <template v-if="state.selectedEvent.lockMode">
               <span class="text-slate-500">Lock Mode</span>
-              <span class="text-yellow-300 font-medium">{{ state.selectedEvent.lockMode }}</span>
+              <span class="text-yellow-300 font-medium" :title="getLockModeDescription(state.selectedEvent.lockMode) ?? ''">{{ state.selectedEvent.lockMode }}<span v-if="getLockModeDescription(state.selectedEvent.lockMode)" class="text-yellow-300/50 text-[10px] font-normal ml-1.5">{{ getLockModeDescription(state.selectedEvent.lockMode) }}</span></span>
             </template>
             <template v-if="state.selectedEvent.extraFields['wait_resource']">
               <span class="text-slate-500">Wait Resource</span>
@@ -744,7 +1063,7 @@ watch(() => state.selectedEvent?.id, () => {
             >
               <div class="min-w-0 flex-1">
                 <span class="text-emerald-400 font-medium">{{ obj.objectName }}</span>
-                <span v-if="obj.lockModes.length" class="text-yellow-300/70 ml-2">{{ obj.lockModes.join(', ') }}</span>
+                <span v-if="obj.lockModes.length" class="text-yellow-300/70 ml-2" :title="obj.lockModes.map(m => m + ': ' + (getLockModeDescription(m) || '?')).join('\n')">{{ obj.lockModes.join(', ') }}</span>
               </div>
               <span class="text-slate-500 ml-2 shrink-0">{{ obj.eventCount }} event{{ obj.eventCount !== 1 ? 's' : '' }}</span>
             </div>
@@ -817,10 +1136,17 @@ watch(() => state.selectedEvent?.id, () => {
             <div
               v-for="[key, val] in filteredExtraFields"
               :key="key"
-              class="grid grid-cols-[1fr_2fr] gap-2 text-xs border-b border-slate-600/50 py-1 hover:bg-slate-600/30"
+              class="grid grid-cols-[1fr_2fr_auto] gap-2 text-xs border-b border-slate-600/50 py-1 hover:bg-slate-600/30 group"
             >
               <span class="text-slate-400 font-mono break-all" v-html="highlightText(String(key), extraFieldsSearch)"></span>
               <span class="text-slate-200 font-mono break-all" v-html="highlightText(String(val), extraFieldsSearch)"></span>
+              <button
+                @click="filterByColumn(String(key), String(val))"
+                class="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-indigo-400 transition-all shrink-0 px-0.5"
+                :title="`Filter by ${key}: ${String(val).substring(0, 50)}`"
+              >
+                <i class="fa-solid fa-filter text-[10px]"></i>
+              </button>
             </div>
           </div>
           <div v-else class="text-xs text-slate-500 text-center py-3">

@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { ref, reactive, onMounted, onUnmounted } from 'vue';
+import { ref, reactive, nextTick, onMounted, onUnmounted } from 'vue';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { listen } from '@tauri-apps/api/event';
 import { useXelState } from '../../composables/useXelState';
 import * as xelApi from '../../composables/xelTauriApi';
 import type { XelLoadProgress, PowerShellStatus, XelEnrichResult } from '../../types/xel';
 
-const { state, addFile, setStats, setLoading, setError, clearAll } = useXelState();
+const { state, addFile, setStats, setLoading, setError, clearAll, selectEvent } = useXelState();
 
 const enriching = ref(false);
 const enrichResult = ref<XelEnrichResult | null>(null);
@@ -16,6 +16,17 @@ const enrichFromDb = async () => {
   enrichResult.value = null;
   try {
     enrichResult.value = await xelApi.enrichFromDb();
+    // Refresh selected event to pick up resolved names
+    if (state.selectedEvent) {
+      const eventId = state.selectedEvent.id;
+      const refreshed = await xelApi.getEvent(eventId);
+      if (refreshed) {
+        // Force watcher to re-fire: clear, tick, then re-set
+        selectEvent(null);
+        await nextTick();
+        selectEvent(refreshed);
+      }
+    }
     // Refresh stats to pick up new database names etc
     state.revision++;
   } catch (err: unknown) {
@@ -305,9 +316,9 @@ const phaseLabel = (phase: string): string => {
       <div v-if="state.stats.timeRangeStart" class="flex justify-between">
         <span>Time Range</span>
         <span class="text-slate-300 font-medium text-right">
-          {{ new Date(state.stats.timeRangeStart).toLocaleTimeString('en-US', { hour12: false }) }}
+          {{ new Date(state.stats.timeRangeStart).toLocaleString('en-US', { month: 'short', day: 'numeric', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) }}
           -
-          {{ new Date(state.stats.timeRangeEnd!).toLocaleTimeString('en-US', { hour12: false }) }}
+          {{ new Date(state.stats.timeRangeEnd!).toLocaleString('en-US', { month: 'short', day: 'numeric', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) }}
         </span>
       </div>
     </div>
