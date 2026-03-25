@@ -49,7 +49,6 @@ const COLUMN_WIDTHS: Record<string, string> = {
   sourceFile: '140px',
 };
 
-const DEFAULT_WIDTH = '100px';
 
 const SHORT_LABELS: Record<string, string> = {
   sessionId: 'Session ID',

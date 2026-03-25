@@ -125,7 +125,6 @@ const renderTimeline = () => {
   const events = timelineEvents.value;
   const margin = { top: 35, right: 20, bottom: 30, left: 90 };
   const width = container.clientWidth;
-  const LANE_HEIGHT = 26;
   const LANE_GAP = 2;
 
   // Group by session
