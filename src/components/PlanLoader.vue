@@ -154,12 +154,21 @@ const setStatus = (message: string, error = false) => {
       />
       
       <!-- Status Message -->
-      <div 
+      <div
         v-if="statusMessage"
         class="mt-4 px-4 py-3 rounded-lg text-sm font-medium flex items-center gap-2"
-        :class="isError ? 'bg-red-500/20 border border-red-500/50 text-red-300' : 'bg-green-500/20 border border-green-500/50 text-green-300'"
+        :class="isError
+          ? 'bg-red-500/20 border border-red-500/50 text-red-300'
+          : state.loading
+            ? 'bg-blue-500/20 border border-blue-500/50 text-blue-300'
+            : 'bg-green-500/20 border border-green-500/50 text-green-300'"
       >
-        <i :class="isError ? 'fa-solid fa-circle-exclamation' : 'fa-solid fa-circle-check'"></i>
+        <i :class="isError
+          ? 'fa-solid fa-circle-exclamation'
+          : state.loading
+            ? 'fa-solid fa-spinner fa-spin'
+            : 'fa-solid fa-circle-check'"
+        ></i>
         {{ statusMessage }}
       </div>
       

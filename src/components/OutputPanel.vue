@@ -148,6 +148,14 @@ const formatTime = (date: Date) => {
       </div>
     </div>
 
+    <!-- Executing State -->
+    <div v-else-if="state.executing" class="flex-1 flex items-center justify-center text-sm">
+      <div class="text-center">
+        <i class="fa-solid fa-spinner fa-spin text-3xl text-blue-400 mb-3"></i>
+        <p class="text-slate-300">Executing query...</p>
+      </div>
+    </div>
+
     <!-- Empty State -->
     <div v-else class="flex-1 flex items-center justify-center text-slate-600 text-sm">
       <div class="text-center">

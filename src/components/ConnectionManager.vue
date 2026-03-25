@@ -123,18 +123,18 @@ onMounted(() => {
     <div class="flex-1 p-4 overflow-y-auto">
       <!-- Active Connection -->
       <div v-if="state.connected" class="mb-4 p-3 rounded-lg bg-green-900/20 border border-green-700/50">
-        <div class="flex items-center justify-between">
-          <div>
+        <div class="flex items-center justify-between gap-2">
+          <div class="min-w-0 flex-1">
             <div class="text-sm font-medium text-green-300 flex items-center gap-2">
-              <span class="w-2 h-2 rounded-full bg-green-400"></span>
-              {{ state.activeConnection?.name }}
+              <span class="w-2 h-2 rounded-full bg-green-400 shrink-0"></span>
+              <span class="truncate">{{ state.activeConnection?.name }}</span>
             </div>
-            <div class="text-xs text-green-400/70 mt-1">
+            <div class="text-xs text-green-400/70 mt-1 truncate">
               {{ state.activeConnection?.host }}:{{ state.activeConnection?.port }}/{{ state.activeConnection?.database }}
             </div>
           </div>
           <button
-            class="px-2 py-1 text-xs rounded bg-red-900/50 text-red-300 hover:bg-red-800/50 transition-colors"
+            class="px-2 py-1 text-xs rounded bg-red-900/50 text-red-300 hover:bg-red-800/50 transition-colors shrink-0"
             @click="disconnect"
           >
             Disconnect
@@ -234,6 +234,7 @@ onMounted(() => {
             :disabled="state.loading"
             @click="handleConnectOnly"
           >
+            <i v-if="state.loading" class="fa-solid fa-spinner fa-spin mr-1"></i>
             Connect
           </button>
           <button
@@ -241,6 +242,7 @@ onMounted(() => {
             :disabled="state.loading"
             @click="handleSaveAndConnect"
           >
+            <i v-if="state.loading" class="fa-solid fa-spinner fa-spin mr-1"></i>
             Save & Connect
           </button>
         </div>
@@ -278,7 +280,7 @@ onMounted(() => {
                   :disabled="state.loading"
                   @click="handleQuickConnect(conn.id)"
                 >
-                  <i class="fa-solid fa-plug"></i>
+                  <i :class="state.loading ? 'fa-solid fa-spinner fa-spin' : 'fa-solid fa-plug'"></i>
                 </button>
                 <button
                   class="px-2 py-1 text-xs rounded bg-red-900/50 text-red-400 hover:bg-red-800/50 transition-colors"

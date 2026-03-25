@@ -6,12 +6,15 @@ import "./styles/main.css";
 import PlanViewer from "./views/PlanViewer.vue";
 import SqlEditorView from "./views/SqlEditorView.vue";
 
+const XelAnalyzerView = () => import("./views/XelAnalyzerView.vue");
+
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
     { path: "/", redirect: "/plan-viewer" },
     { path: "/plan-viewer", component: PlanViewer, name: "plan-viewer" },
     { path: "/sql-editor", component: SqlEditorView, name: "sql-editor" },
+    { path: "/xel-analyzer", component: XelAnalyzerView, name: "xel-analyzer" },
   ],
 });
 

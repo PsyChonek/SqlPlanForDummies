@@ -98,6 +98,14 @@ const handleComparisonFile = async (event: Event) => {
 
         <!-- Tab content -->
         <div class="flex-1 overflow-hidden relative">
+          <!-- Loading overlay -->
+          <div v-if="state.loading" class="absolute inset-0 z-10 flex items-center justify-center bg-slate-800/80">
+            <div class="flex flex-col items-center gap-3">
+              <i class="fa-solid fa-spinner fa-spin text-3xl text-blue-400"></i>
+              <span class="text-sm text-slate-300">Loading execution plan...</span>
+            </div>
+          </div>
+
           <div v-show="activeMainTab === 'execution'" class="absolute inset-0">
             <ExecutionPlanGraph :show-header="false" />
           </div>

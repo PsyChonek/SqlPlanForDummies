@@ -1,7 +1,10 @@
 <script setup lang="ts">
+import { ref } from 'vue';
 import { useDbConnection } from './composables/useDbConnection';
+import ConnectionManager from './components/ConnectionManager.vue';
 
 const { state: dbState } = useDbConnection();
+const showConnectionDialog = ref(false);
 </script>
 
 <template>
@@ -16,21 +19,23 @@ const { state: dbState } = useDbConnection();
         <p class="text-sm text-indigo-200 mt-0.5">Interactive Query Performance Visualization</p>
       </div>
       <div class="flex items-center gap-3">
-        <!-- Connection Status -->
-        <div
+        <!-- Connection Status (clickable) -->
+        <button
           v-if="dbState.connected"
-          class="flex items-center gap-2 px-3 py-1.5 bg-green-900/30 border border-green-700/50 rounded-lg text-sm text-green-300"
+          @click="showConnectionDialog = true"
+          class="flex items-center gap-2 px-3 py-1.5 bg-green-900/30 border border-green-700/50 rounded-lg text-sm text-green-300 hover:bg-green-900/50 transition-colors cursor-pointer"
         >
           <span class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
           {{ dbState.activeConnection?.name || 'Connected' }}
-        </div>
-        <div
+        </button>
+        <button
           v-else
-          class="flex items-center gap-2 px-3 py-1.5 bg-slate-800/50 rounded-lg text-sm text-slate-500"
+          @click="showConnectionDialog = true"
+          class="flex items-center gap-2 px-3 py-1.5 bg-slate-800/50 rounded-lg text-sm text-slate-500 hover:bg-slate-700/50 hover:text-slate-300 transition-colors cursor-pointer"
         >
           <span class="w-2 h-2 rounded-full bg-slate-600"></span>
           Disconnected
-        </div>
+        </button>
 
         <a
           href="https://github.com/PsyChonek/SqlPlanForDummies"
@@ -65,9 +70,43 @@ const { state: dbState } = useDbConnection();
         <i class="fa-solid fa-code mr-2"></i>
         SQL Editor
       </router-link>
+      <router-link
+        to="/xel-analyzer"
+        class="px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px"
+        :class="$route.path === '/xel-analyzer'
+          ? 'text-indigo-300 border-indigo-400'
+          : 'text-slate-400 border-transparent hover:text-slate-300 hover:border-slate-600'"
+      >
+        <i class="fa-solid fa-chart-gantt mr-2"></i>
+        XEL Analyzer
+      </router-link>
     </nav>
 
     <!-- Router View -->
     <router-view class="flex-1 overflow-hidden" />
+
+    <!-- Connection Dialog -->
+    <Teleport to="body">
+      <div
+        v-if="showConnectionDialog"
+        class="fixed inset-0 z-50 flex items-center justify-center"
+      >
+        <!-- Backdrop -->
+        <div
+          class="absolute inset-0 bg-black/60 backdrop-blur-sm"
+          @click="showConnectionDialog = false"
+        ></div>
+        <!-- Dialog -->
+        <div class="relative w-full max-w-md max-h-[80vh] m-4">
+          <button
+            @click="showConnectionDialog = false"
+            class="absolute -top-2 -right-2 z-10 w-7 h-7 flex items-center justify-center rounded-full bg-slate-700 border border-slate-600 text-slate-400 hover:text-white hover:bg-slate-600 transition-colors shadow-lg"
+          >
+            <i class="fa-solid fa-xmark text-xs"></i>
+          </button>
+          <ConnectionManager />
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
