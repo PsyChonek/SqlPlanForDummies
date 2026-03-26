@@ -184,6 +184,7 @@ jobs:
 
   winget:
     needs: release
+    if: always() && needs.release.result == 'success'
     runs-on: windows-latest
     environment: release
     steps:
