@@ -1,10 +1,22 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import { useDbConnection } from './composables/useDbConnection';
+import { tauriInvoke } from './composables/tauriApi';
 import ConnectionManager from './components/ConnectionManager.vue';
 
 const { state: dbState } = useDbConnection();
 const showConnectionDialog = ref(false);
+const isWindows = ref(false);
+
+onMounted(async () => {
+  try {
+    const platform = await tauriInvoke<string>('get_platform');
+    isWindows.value = platform === 'windows';
+  } catch {
+    // Outside Tauri or command not available — hide XEL
+    isWindows.value = false;
+  }
+});
 </script>
 
 <template>
@@ -68,6 +80,7 @@ const showConnectionDialog = ref(false);
         SQL Editor
       </router-link>
       <router-link
+        v-if="isWindows"
         to="/xel-analyzer"
         class="px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px"
         :class="$route.path === '/xel-analyzer'

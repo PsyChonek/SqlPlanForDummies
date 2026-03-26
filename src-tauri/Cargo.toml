@@ -41,7 +41,8 @@ chrono = { version = "0.4", features = ["serde"] }
 hostname = "0.4"
 whoami = "1"
 
-# XEL parsing
+# XEL parsing (Windows-only: requires PowerShell + SqlServer module)
+[target.'cfg(target_os = "windows")'.dependencies]
 quick-xml = "0.37"
 rfd = "0.15"
 
