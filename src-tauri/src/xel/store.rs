@@ -173,11 +173,14 @@ impl XelStore {
                 }
             }
 
-            // Index by deadlock_id (from lock_deadlock events)
-            if let Some(v) = event.extra_fields.get("deadlock_id") {
-                if let Some(did) = Self::json_value_as_i64(v) {
-                    if did != 0 {
-                        self.by_deadlock.entry(did.to_string()).or_default().push(idx);
+            // Index by deadlock_id (from lock_deadlock events) and
+            // deadlock_cycle_id (from database_xml_deadlock_report events)
+            for key in &["deadlock_id", "deadlock_cycle_id"] {
+                if let Some(v) = event.extra_fields.get(*key) {
+                    if let Some(did) = Self::json_value_as_i64(v) {
+                        if did != 0 {
+                            self.by_deadlock.entry(did.to_string()).or_default().push(idx);
+                        }
                     }
                 }
             }
@@ -649,6 +652,18 @@ impl XelStore {
         None
     }
 
+    /// Extract Object Id values from inputbuf strings like "Proc [Database Id = 6 Object Id = 123]"
+    fn extract_object_ids_from_inputbufs(xml: &str, ids: &mut HashSet<i64>) {
+        for cap_start in xml.match_indices("Object Id = ").map(|(i, _)| i) {
+            let rest = &xml[cap_start + 12..];
+            if let Some(end) = rest.find(']') {
+                if let Ok(id) = rest[..end].trim().parse::<i64>() {
+                    if id > 0 { ids.insert(id); }
+                }
+            }
+        }
+    }
+
     /// Collect unique database_ids from extra_fields (handles both Number and String)
     pub fn collect_database_ids(&self) -> Vec<i64> {
         let mut ids: HashSet<i64> = HashSet::new();
@@ -737,14 +752,20 @@ impl XelStore {
                     }
                 }
                 // Object Id from inputbuf "Proc [Database Id = X Object Id = Y]"
-                for cap_start in xml.match_indices("Object Id = ").map(|(i, _)| i) {
-                    let rest = &xml[cap_start + 12..];
-                    if let Some(end) = rest.find(']') {
-                        if let Ok(id) = rest[..end].trim().parse::<i64>() {
-                            if id > 0 { ids.insert(id); }
+                Self::extract_object_ids_from_inputbufs(xml, &mut ids);
+            }
+            // Same for deadlock graph XML
+            if let Some(ref xml) = event.deadlock_graph {
+                if let Some(start) = xml.find("waitresource=\"") {
+                    let rest = &xml[start + 14..];
+                    if let Some(end) = rest.find('"') {
+                        let wr = &rest[..end];
+                        if let Some(obj_id) = Self::parse_wait_resource_object_id(wr) {
+                            ids.insert(obj_id);
                         }
                     }
                 }
+                Self::extract_object_ids_from_inputbufs(xml, &mut ids);
             }
         }
         ids.into_iter().collect()
@@ -808,6 +829,26 @@ impl XelStore {
                 }
                 if xml_clone != *xml {
                     event.blocked_process_report = Some(xml_clone);
+                }
+            }
+            // Resolve deadlock graph inputbufs the same way
+            if let Some(ref xml) = event.deadlock_graph {
+                let mut xml_clone = xml.clone();
+                for cap_start in xml.match_indices("Object Id = ").map(|(i, _)| i).collect::<Vec<_>>() {
+                    let rest = &xml[cap_start + 12..];
+                    if let Some(end) = rest.find(']') {
+                        if let Ok(id) = rest[..end].trim().parse::<i64>() {
+                            if let Some(name) = obj_map.get(&id) {
+                                let old = format!("Object Id = {}]", id);
+                                let new = format!("Object Id = {} ({})]", id, name);
+                                xml_clone = xml_clone.replacen(&old, &new, 1);
+                            }
+                        }
+                    }
+                }
+                if xml_clone != *xml {
+                    event.deadlock_graph = Some(xml_clone);
+                    count += 1;
                 }
             }
         }
@@ -1346,16 +1387,18 @@ impl XelStore {
         // 2. Build blocking chain from BPRs
         let blocking_chain = build_blocking_chain(&parsed_bprs, &self.events, &involved_sessions, anchor_ts, window);
 
-        // 3. Find blocker events (events from blocking sessions around the time)
+        // 3. Find events from blocking AND blocked sessions around the time.
+        // Both sides are important for understanding the contention scenario.
         let mut blocker_events: Vec<XelEvent> = Vec::new();
-        let blocker_sids: HashSet<i64> = parsed_bprs
-            .iter()
-            .filter_map(|p| p.blocking_spid)
-            .collect();
+        let mut bpr_sids: HashSet<i64> = HashSet::new();
+        for bpr in &parsed_bprs {
+            if let Some(s) = bpr.blocking_spid { bpr_sids.insert(s); }
+            if let Some(s) = bpr.blocked_spid { bpr_sids.insert(s); }
+        }
 
-        for &sid in &blocker_sids {
+        for &sid in &bpr_sids {
             if Some(sid) == anchor_sid {
-                continue; // Don't include anchor session as blocker events
+                continue; // Don't include anchor session's own events
             }
             if let Some(indices) = self.by_session.get(&sid) {
                 for &idx in indices {
@@ -1561,12 +1604,14 @@ impl XelStore {
                             let anchor_involved = anchor_sid.map_or(true, |sid| {
                                 parsed.processes.iter().any(|p| p.spid == Some(sid))
                             });
+                            // The anchor IS the deadlock report event itself
+                            let anchor_is_this_event = ev.id == event_id;
                             // If anchor is likely a deadlock victim, include nearby
                             // deadlocks even if session doesn't match exactly
-                            // (victim session may have been recycled, or the XE
-                            // session may report a different spid)
                             let close_in_time = diff <= 5000; // within 5s
-                            if anchor_involved || (is_likely_deadlock_victim && close_in_time) {
+                            if anchor_involved || anchor_is_this_event
+                                || (is_likely_deadlock_victim && close_in_time)
+                            {
                                 deadlocks.push(parsed);
                             }
                         }
@@ -1583,26 +1628,33 @@ impl XelStore {
         let mut deadlock_id: Option<i64> = None;
         let mut deadlock_lock_events: Vec<XelEvent> = Vec::new();
 
-        // First check the anchor event itself
-        if let Some(did) = anchor.extra_fields.get("deadlock_id").and_then(|v| Self::json_value_as_i64(v)) {
-            if did != 0 {
-                deadlock_id = Some(did);
+        // First check the anchor event itself (deadlock_id from lock_deadlock,
+        // deadlock_cycle_id from database_xml_deadlock_report)
+        for key in &["deadlock_id", "deadlock_cycle_id"] {
+            if deadlock_id.is_some() { break; }
+            if let Some(did) = anchor.extra_fields.get(*key).and_then(|v| Self::json_value_as_i64(v)) {
+                if did != 0 {
+                    deadlock_id = Some(did);
+                }
             }
         }
 
         // If anchor doesn't have deadlock_id, search related events in same session/transaction
+        let deadlock_id_keys = ["deadlock_id", "deadlock_cycle_id"];
         if deadlock_id.is_none() {
             // Check events in same session within time window
             if let Some(sid) = anchor_sid {
                 if let Some(indices) = self.by_session.get(&sid) {
-                    for &idx in indices {
+                    'session_search: for &idx in indices {
                         let ev = &self.events[idx];
                         let diff = (ev.timestamp - anchor_ts).num_milliseconds().abs();
                         if diff <= time_window_ms {
-                            if let Some(did) = ev.extra_fields.get("deadlock_id").and_then(|v| Self::json_value_as_i64(v)) {
-                                if did != 0 {
-                                    deadlock_id = Some(did);
-                                    break;
+                            for key in &deadlock_id_keys {
+                                if let Some(did) = ev.extra_fields.get(*key).and_then(|v| Self::json_value_as_i64(v)) {
+                                    if did != 0 {
+                                        deadlock_id = Some(did);
+                                        break 'session_search;
+                                    }
                                 }
                             }
                         }
@@ -1619,14 +1671,16 @@ impl XelStore {
                     };
                     if let Some(tid) = tid_str {
                         if let Some(indices) = self.by_transaction.get(&tid) {
-                            for &idx in indices {
+                            'txn_search: for &idx in indices {
                                 let ev = &self.events[idx];
                                 let diff = (ev.timestamp - anchor_ts).num_milliseconds().abs();
                                 if diff <= time_window_ms {
-                                    if let Some(did) = ev.extra_fields.get("deadlock_id").and_then(|v| Self::json_value_as_i64(v)) {
-                                        if did != 0 {
-                                            deadlock_id = Some(did);
-                                            break;
+                                    for key in &deadlock_id_keys {
+                                        if let Some(did) = ev.extra_fields.get(*key).and_then(|v| Self::json_value_as_i64(v)) {
+                                            if did != 0 {
+                                                deadlock_id = Some(did);
+                                                break 'txn_search;
+                                            }
                                         }
                                     }
                                 }
@@ -1670,6 +1724,88 @@ impl XelStore {
         }
 
         let has_deadlock_id = deadlock_id.is_some() && !deadlock_lock_events.is_empty();
+
+        // 7c. If we have parsed deadlocks, fetch events from participant sessions
+        // (even if deadlock_lock_events is empty — the parsed graph has the SPIDs)
+        // Include ALL participants — including the anchor session, because for
+        // deadlock events (database_xml_deadlock_report, lock_deadlock) the anchor
+        // IS a participant and we need its rpc_completed/sql_batch_completed.
+        if !deadlocks.is_empty() {
+            let mut participant_sids: HashSet<i64> = HashSet::new();
+            for dl in &deadlocks {
+                for proc in &dl.processes {
+                    if let Some(spid) = proc.spid {
+                        participant_sids.insert(spid);
+                    }
+                }
+            }
+            for &sid in &participant_sids {
+                if let Some(indices) = self.by_session.get(&sid) {
+                    for &idx in indices {
+                        let ev = &self.events[idx];
+                        let diff = (ev.timestamp - anchor_ts).num_milliseconds().abs();
+                        if diff <= time_window_ms {
+                            if !blocker_events.iter().any(|e| e.id == ev.id) {
+                                blocker_events.push(ev.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            blocker_events.sort_by_key(|e| e.timestamp);
+            blocker_events.truncate(100);
+        }
+
+        // 7d. Correlate by attach_activity_id — find all events (locks, waits, rpc)
+        // sharing an activity_id with any deadlock participant event.
+        // This catches rpc_completed events that share the same request as lock events.
+        // Parallel worker threads have unique activity_ids but share attach_activity_id_xfer
+        // with their parent request (the rpc_completed). Collecting _xfer GUIDs from
+        // session-correlated events (blocker_events from step 7c) links back to the RPC.
+        // Only run for deadlock scenarios — for lock_blocking with BPRs, the blocker/blocked
+        // sessions are already identified and activity_id fan-out pulls in unrelated sessions.
+        if !deadlocks.is_empty() || has_deadlock_id || is_likely_deadlock_victim {
+            let mut activity_guids: HashSet<String> = HashSet::new();
+
+            let collect_guids = |ev: &XelEvent, guids: &mut HashSet<String>| {
+                for field in &["attach_activity_id", "attach_activity_id_xfer"] {
+                    if let Some(s) = ev.extra_fields.get(*field).and_then(|v| v.as_str()) {
+                        if let Some(guid) = s.split(':').next() {
+                            if guid.len() >= 36 {
+                                guids.insert(guid.to_string());
+                            }
+                        }
+                    }
+                }
+            };
+
+            // Collect from anchor, deadlock lock events, and blocker events (from step 7c)
+            collect_guids(anchor, &mut activity_guids);
+            for ev in &deadlock_lock_events {
+                collect_guids(ev, &mut activity_guids);
+            }
+            for ev in &blocker_events {
+                collect_guids(ev, &mut activity_guids);
+            }
+
+            let existing_ids: HashSet<u64> = blocker_events.iter().map(|e| e.id)
+                .chain(std::iter::once(event_id))
+                .collect();
+            for guid in &activity_guids {
+                if let Some(indices) = self.by_activity.get(guid) {
+                    for &idx in indices {
+                        let ev = &self.events[idx];
+                        if existing_ids.contains(&ev.id) { continue; }
+                        let diff = (ev.timestamp - anchor_ts).num_milliseconds().abs();
+                        if diff <= time_window_ms {
+                            blocker_events.push(ev.clone());
+                        }
+                    }
+                }
+            }
+            blocker_events.sort_by_key(|e| e.timestamp);
+            blocker_events.truncate(200);
+        }
 
         // 8. Diagnose the root cause
         let diagnosis = if !deadlocks.is_empty() {
@@ -1738,6 +1874,8 @@ fn parse_blocked_process_report_xml(
         blocked_hostname: None,
         blocked_app_name: None,
         blocked_login_name: None,
+        blocked_status: None,
+        blocked_last_batch_started: None,
         blocking_spid: None,
         blocking_xact_id: None,
         blocking_input_buffer: None,
@@ -1792,6 +1930,8 @@ fn parse_blocked_process_report_xml(
                                 result.blocked_login_name = attrs.get("loginname").cloned();
                                 result.blocked_isolation_level = attrs.get("isolationlevel").cloned();
                                 result.blocked_tran_count = attrs.get("trancount").and_then(|s| s.parse().ok());
+                                result.blocked_status = attrs.get("status").cloned();
+                                result.blocked_last_batch_started = attrs.get("lastbatchstarted").cloned();
                             }
                             Section::BlockingProcess => {
                                 result.blocking_spid = attrs.get("spid").and_then(|s| s.parse().ok());
@@ -1917,23 +2057,19 @@ fn parse_deadlock_graph_xml(
         ProcessList,
         InProcess(String), // process id
         InInputBuf(String), // owning process id
+        InExecStack(String), // owning process id
+        InExecFrame(String, DeadlockExecutionFrame), // owning process id + frame being built
         ResourceList,
         InResource(DeadlockResource),
     }
     let mut state = State::Root;
     let mut current_input_buf = String::new();
+    let mut current_frame_text = String::new();
 
     loop {
         match reader.read_event() {
             Ok(XmlEvent::Start(ref e)) | Ok(XmlEvent::Empty(ref e)) => {
                 let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                let is_empty = matches!(reader.read_event(), _) && {
-                    // Re-check — actually we can't easily tell from here.
-                    // Let's use the original event type
-                    false
-                };
-                // Actually, let's handle this differently with proper matching
-                let _ = is_empty;
                 let attrs = extract_xml_attrs(e);
 
                 match tag.as_str() {
@@ -1957,21 +2093,50 @@ fn parse_deadlock_graph_xml(
                                 id: proc_id.clone(),
                                 spid: attrs.get("spid").and_then(|s| s.parse().ok()),
                                 is_victim: false, // set later from victim_ids
+                                xact_id: attrs.get("xactid").cloned(),
                                 lock_mode: attrs.get("lockMode").cloned(),
                                 wait_resource: attrs.get("waitresource").cloned(),
                                 wait_time_ms: attrs.get("waittime").and_then(|s| s.parse().ok()),
                                 transaction_name: attrs.get("transactionname").cloned(),
                                 log_used: attrs.get("logused").and_then(|s| s.parse().ok()),
                                 input_buffer: None,
-                                database_name: attrs.get("currentdb").cloned(),
+                                database_name: attrs.get("currentdbname").cloned()
+                                    .or_else(|| attrs.get("currentdb").cloned()),
                                 hostname: attrs.get("hostname").cloned(),
                                 app_name: attrs.get("clientapp").cloned(),
                                 login_name: attrs.get("loginname").cloned(),
                                 isolation_level: attrs.get("isolationlevel").cloned(),
                                 status: attrs.get("status").cloned(),
+                                tran_count: attrs.get("trancount").and_then(|s| s.parse().ok()),
+                                last_batch_started: attrs.get("lastbatchstarted").cloned(),
+                                last_batch_completed: attrs.get("lastbatchcompleted").cloned(),
+                                ecid: attrs.get("ecid").and_then(|s| s.parse().ok()),
+                                execution_stack: Vec::new(),
                             };
                             processes.push(proc);
                             state = State::InProcess(proc_id);
+                        }
+                    }
+                    "executionStack" => {
+                        if let State::InProcess(ref pid) = state {
+                            state = State::InExecStack(pid.clone());
+                        }
+                    }
+                    "frame" => {
+                        if let State::InExecStack(ref pid) = state {
+                            let frame = DeadlockExecutionFrame {
+                                proc_name: attrs.get("procname").cloned()
+                                    .filter(|s| s != "unknown" && s != "adhoc"),
+                                query_hash: attrs.get("queryhash").cloned()
+                                    .filter(|s| s != "0x0000000000000000"),
+                                query_plan_hash: attrs.get("queryplanhash").cloned()
+                                    .filter(|s| s != "0x0000000000000000"),
+                                line: attrs.get("line").and_then(|s| s.parse().ok()),
+                                sql_handle: attrs.get("sqlhandle").cloned(),
+                                sql_text: None,
+                            };
+                            current_frame_text.clear();
+                            state = State::InExecFrame(pid.clone(), frame);
                         }
                     }
                     "inputbuf" => {
@@ -1982,7 +2147,7 @@ fn parse_deadlock_graph_xml(
                     }
                     "resource-list" => state = State::ResourceList,
                     "keylock" | "pagelock" | "objectlock" | "ridlock" | "hobtlock"
-                    | "exchangeEvent" | "threadpool" | "metadata" => {
+                    | "xactlock" | "exchangeEvent" | "threadpool" | "metadata" => {
                         if matches!(state, State::ResourceList) {
                             let res = DeadlockResource {
                                 resource_type: tag.clone(),
@@ -1991,11 +2156,35 @@ fn parse_deadlock_graph_xml(
                                 object_name: attrs.get("objectname").cloned(),
                                 index_name: attrs.get("indexname").cloned(),
                                 mode: attrs.get("mode").cloned(),
+                                hobt_id: attrs.get("hobtid").cloned()
+                                    .or_else(|| attrs.get("associatedObjectId").cloned()),
+                                file_id: attrs.get("fileid").cloned(),
+                                page_id: attrs.get("pageid").cloned(),
                                 holders: Vec::new(),
                                 waiters: Vec::new(),
                             };
                             state = State::InResource(res);
+                        } else if let State::InResource(ref mut res) = state {
+                            // Nested resource (e.g. keylock inside xactlock/UnderlyingResource)
+                            // — fill in details on the parent resource
+                            if res.object_name.is_none() {
+                                res.object_name = attrs.get("objectname").cloned();
+                            }
+                            if res.index_name.is_none() {
+                                res.index_name = attrs.get("indexname").cloned();
+                            }
+                            if res.hobt_id.is_none() {
+                                res.hobt_id = attrs.get("hobtid").cloned()
+                                    .or_else(|| attrs.get("associatedObjectId").cloned());
+                            }
+                            if res.database_name.is_none() {
+                                res.database_name = attrs.get("dbid").cloned();
+                            }
                         }
+                    }
+                    // xactlock wraps underlying resource info (e.g. keylock inside <UnderlyingResource>)
+                    "UnderlyingResource" => {
+                        // Keep current resource state — child elements fill in details
                     }
                     "owner-list" | "waiter-list" => {
                         // Keep current resource state
@@ -2022,15 +2211,29 @@ fn parse_deadlock_graph_xml(
                 }
             }
             Ok(XmlEvent::Text(ref e)) => {
-                if let State::InInputBuf(_) = &state {
-                    if let Ok(text) = e.unescape() {
-                        current_input_buf.push_str(&text);
+                match &state {
+                    State::InInputBuf(_) => {
+                        if let Ok(text) = e.unescape() {
+                            current_input_buf.push_str(&text);
+                        }
                     }
+                    State::InExecFrame(_, _) => {
+                        if let Ok(text) = e.unescape() {
+                            current_frame_text.push_str(&text);
+                        }
+                    }
+                    _ => {}
                 }
             }
             Ok(XmlEvent::CData(ref e)) => {
-                if let State::InInputBuf(_) = &state {
-                    current_input_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
+                match &state {
+                    State::InInputBuf(_) => {
+                        current_input_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
+                    }
+                    State::InExecFrame(_, _) => {
+                        current_frame_text.push_str(&String::from_utf8_lossy(e.as_ref()));
+                    }
+                    _ => {}
                 }
             }
             Ok(XmlEvent::End(ref e)) => {
@@ -2049,6 +2252,25 @@ fn parse_deadlock_graph_xml(
                             current_input_buf.clear();
                         }
                     }
+                    "frame" => {
+                        if let State::InExecFrame(pid, mut frame) = std::mem::replace(&mut state, State::Root) {
+                            let text = current_frame_text.trim().to_string();
+                            if !text.is_empty() {
+                                frame.sql_text = Some(text);
+                            }
+                            current_frame_text.clear();
+                            // Add frame to the process
+                            if let Some(proc) = processes.iter_mut().find(|p| p.id == pid) {
+                                proc.execution_stack.push(frame);
+                            }
+                            state = State::InExecStack(pid);
+                        }
+                    }
+                    "executionStack" => {
+                        if let State::InExecStack(pid) = std::mem::replace(&mut state, State::Root) {
+                            state = State::InProcess(pid);
+                        }
+                    }
                     "process" => {
                         if matches!(state, State::InProcess(_)) {
                             state = State::ProcessList;
@@ -2057,7 +2279,7 @@ fn parse_deadlock_graph_xml(
                     "process-list" => state = State::Root,
                     "victim-list" => state = State::Root,
                     "keylock" | "pagelock" | "objectlock" | "ridlock" | "hobtlock"
-                    | "exchangeEvent" | "threadpool" | "metadata" => {
+                    | "xactlock" | "exchangeEvent" | "threadpool" | "metadata" => {
                         if let State::InResource(res) = std::mem::replace(&mut state, State::ResourceList) {
                             resources.push(res);
                         }
@@ -2082,6 +2304,82 @@ fn parse_deadlock_graph_xml(
     if processes.is_empty() {
         return None;
     }
+
+    // Clean GUID-prefixed names (e.g. "13de662b-...-5a5005f15f11.dbo.SP_Name" → "dbo.SP_Name")
+    fn strip_guid_prefix(name: &mut String) {
+        if name.len() > 37 && name.as_bytes()[8] == b'-' && name.as_bytes()[36] == b'.' {
+            *name = name[37..].to_string();
+        }
+    }
+    for proc in &mut processes {
+        for frame in &mut proc.execution_stack {
+            if let Some(ref mut name) = frame.proc_name {
+                strip_guid_prefix(name);
+            }
+        }
+    }
+    for res in &mut resources {
+        if let Some(ref mut name) = res.object_name {
+            strip_guid_prefix(name);
+        }
+    }
+
+    // Collapse parallel worker threads (ecid > 0) into the coordinator (ecid == 0).
+    // SQL Server parallel queries create many process entries for the same session —
+    // showing 80+ identical entries is noise. Keep the coordinator and summarize workers.
+    let has_parallel = processes.iter().any(|p| p.ecid.unwrap_or(0) > 0);
+    let processes = if has_parallel {
+        let mut coordinator_map: HashMap<i64, usize> = HashMap::new(); // spid → index in collapsed
+        let mut collapsed: Vec<DeadlockProcess> = Vec::new();
+
+        // First pass: collect coordinators (ecid == 0)
+        for proc in &processes {
+            let ecid = proc.ecid.unwrap_or(0);
+            if ecid == 0 {
+                if let Some(spid) = proc.spid {
+                    coordinator_map.insert(spid, collapsed.len());
+                }
+                collapsed.push(proc.clone());
+            }
+        }
+
+        // Second pass: merge workers into coordinators
+        for proc in &processes {
+            let ecid = proc.ecid.unwrap_or(0);
+            if ecid == 0 { continue; }
+            let spid = proc.spid.unwrap_or(-1);
+            if let Some(&coord_idx) = coordinator_map.get(&spid) {
+                let coord = &mut collapsed[coord_idx];
+                // Take wait_resource from worker if coordinator doesn't have one
+                if coord.wait_resource.is_none() && proc.wait_resource.is_some() {
+                    coord.wait_resource = proc.wait_resource.clone();
+                    coord.wait_time_ms = proc.wait_time_ms;
+                    coord.lock_mode = proc.lock_mode.clone();
+                }
+                // Track max ecid as parallel thread count
+                let current = coord.ecid.unwrap_or(0);
+                coord.ecid = Some(current.max(ecid));
+            } else {
+                // Orphan worker without coordinator — keep it
+                collapsed.push(proc.clone());
+            }
+        }
+
+        // Also update victim flags — a worker thread may be the victim
+        for proc in &processes {
+            if proc.is_victim {
+                if let Some(spid) = proc.spid {
+                    if let Some(&coord_idx) = coordinator_map.get(&spid) {
+                        collapsed[coord_idx].is_victim = true;
+                    }
+                }
+            }
+        }
+
+        collapsed
+    } else {
+        processes
+    };
 
     Some(ParsedDeadlockGraph {
         event_id,
@@ -2129,7 +2427,8 @@ fn build_blocking_chain(
             continue;
         };
 
-        let (wait_resource, lock_mode, sql_preview, app_name, username, database) =
+        let (wait_resource, lock_mode, sql_preview, app_name, username, database,
+             hostname, status, isolation_level, tran_count, last_batch_started, wait_time_ms, xact_id, execution_stack) =
             if let Some((bpr, is_blocked)) = session_info.get(&sid) {
                 if *is_blocked {
                     (
@@ -2139,6 +2438,14 @@ fn build_blocking_chain(
                         bpr.blocked_app_name.clone(),
                         bpr.blocked_login_name.clone(),
                         bpr.blocked_database.clone(),
+                        bpr.blocked_hostname.clone(),
+                        bpr.blocked_status.clone(),
+                        bpr.blocked_isolation_level.clone(),
+                        bpr.blocked_tran_count,
+                        bpr.blocked_last_batch_started.clone(),
+                        bpr.blocked_wait_time_ms,
+                        bpr.blocked_xact_id.clone(),
+                        bpr.blocked_execution_stack.clone(),
                     )
                 } else {
                     (
@@ -2148,10 +2455,18 @@ fn build_blocking_chain(
                         bpr.blocking_app_name.clone(),
                         bpr.blocking_login_name.clone(),
                         bpr.blocking_database.clone(),
+                        bpr.blocking_hostname.clone(),
+                        bpr.blocking_status.clone(),
+                        bpr.blocking_isolation_level.clone(),
+                        bpr.blocking_tran_count,
+                        bpr.blocking_last_batch_started.clone(),
+                        None, // blocker has no wait_time
+                        bpr.blocking_xact_id.clone(),
+                        bpr.blocking_execution_stack.clone(),
                     )
                 }
             } else {
-                (None, None, None, None, None, None)
+                (None, None, None, None, None, None, None, None, None, None, None, None, None, Vec::new())
             };
 
         // Find event IDs from this session in time window
@@ -2177,6 +2492,14 @@ fn build_blocking_chain(
             database,
             event_ids,
             blocked_by_session: blocked_by.get(&sid).copied(),
+            hostname,
+            status,
+            isolation_level,
+            tran_count,
+            last_batch_started,
+            wait_time_ms,
+            xact_id,
+            execution_stack,
         });
     }
 
@@ -2461,8 +2784,18 @@ fn build_recommendations(
                 if let Some(ref obj) = obj_name { desc.push_str(&format!(" on [{}]", obj)); }
                 if !lock_info.is_empty() { desc.push_str(&format!(" — locks: {}", lock_info.join(", "))); }
                 if let Some(ref sql) = sql_preview {
-                    let preview: String = sql.chars().take(200).collect();
-                    desc.push_str(&format!("\nSQL: {}", preview));
+                    // Clean up raw "Proc [Database Id = X Object Id = Y (schema.name)]" to just "Proc [schema.name]"
+                    let cleaned = if let (Some(start), Some(end)) = (sql.find('('), sql.rfind(')')) {
+                        if sql.contains("Database Id") && sql.contains("Object Id") && start < end {
+                            let proc_name = &sql[start + 1..end];
+                            format!("Proc [{}]", proc_name)
+                        } else {
+                            sql.chars().take(200).collect()
+                        }
+                    } else {
+                        sql.chars().take(200).collect()
+                    };
+                    desc.push_str(&format!("\nSQL: {}", cleaned));
                 }
                 recs.push(desc);
             }
@@ -2489,20 +2822,44 @@ fn build_recommendations(
                 recs.push(format!("Lock requests at deadlock: {}", resource_info.join(" | ")));
             }
 
-            // Show contended resources from XML graph
+            // Show contended resources from XML graph — deduplicated and aggregated
             if has_xml_graph {
+                use std::collections::HashMap;
+                // Key: (resource_type, object_name, index_name) → count + unique lock mode combos
+                let mut res_agg: HashMap<(String, String, String), (usize, Vec<String>)> = HashMap::new();
                 for dl in deadlocks {
                     for res in &dl.resources {
-                        let mut desc = res.resource_type.clone();
-                        if let Some(ref obj) = res.object_name { desc.push_str(&format!(" on [{}]", obj)); }
-                        if let Some(ref idx) = res.index_name { desc.push_str(&format!(" ({})", idx)); }
+                        if res.resource_type == "exchangeEvent" { continue; }
+                        let obj = res.object_name.as_deref().unwrap_or("").to_string();
+                        let idx = res.index_name.as_deref().unwrap_or("").to_string();
+                        let key = (res.resource_type.clone(), obj, idx);
+
+                        let mut modes = String::new();
                         let holders: Vec<String> = res.holders.iter().map(|h| format!("held {}", h.mode.as_deref().unwrap_or("?"))).collect();
                         let waiters: Vec<String> = res.waiters.iter().map(|w| format!("waited {}", w.mode.as_deref().unwrap_or("?"))).collect();
                         if !holders.is_empty() || !waiters.is_empty() {
-                            desc.push_str(&format!(" — {} / {}", holders.join(", "), waiters.join(", ")));
+                            modes = format!("{} / {}", holders.join(", "), waiters.join(", "));
                         }
-                        recs.push(desc);
+
+                        let entry = res_agg.entry(key).or_insert_with(|| (0, Vec::new()));
+                        entry.0 += 1;
+                        if !modes.is_empty() && !entry.1.contains(&modes) {
+                            entry.1.push(modes);
+                        }
                     }
+                }
+
+                for ((rtype, obj, idx), (count, mode_combos)) in &res_agg {
+                    let mut desc = rtype.clone();
+                    if !obj.is_empty() { desc.push_str(&format!(" on [{}]", obj)); }
+                    if !idx.is_empty() { desc.push_str(&format!(" ({})", idx)); }
+                    if !mode_combos.is_empty() {
+                        desc.push_str(&format!(" — {}", mode_combos.join("; ")));
+                    }
+                    if *count > 1 {
+                        desc.push_str(&format!(" ({}x)", count));
+                    }
+                    recs.push(desc);
                 }
             }
 
@@ -2840,11 +3197,39 @@ fn build_analysis_summary(
                 ));
                 let resource_types: HashSet<String> = deadlocks.iter()
                     .flat_map(|dl| dl.resources.iter())
+                    .filter(|r| r.resource_type != "exchangeEvent")
                     .map(|r| r.resource_type.clone())
                     .collect();
+                let exchange_count: usize = deadlocks.iter()
+                    .flat_map(|dl| dl.resources.iter())
+                    .filter(|r| r.resource_type == "exchangeEvent")
+                    .count();
                 if !resource_types.is_empty() {
                     let types: Vec<String> = resource_types.into_iter().collect();
-                    parts.push(format!("Contended resources: {}.", types.join(", ")));
+                    let suffix = if exchange_count > 0 {
+                        format!(" (+ {} parallel exchange waits)", exchange_count)
+                    } else { String::new() };
+                    parts.push(format!("Contended resources: {}.{}", types.join(", "), suffix));
+                }
+                // Show contended object/table names from resources
+                let contended_objects: HashSet<String> = deadlocks.iter()
+                    .flat_map(|dl| dl.resources.iter())
+                    .filter(|r| r.resource_type != "exchangeEvent")
+                    .filter_map(|r| r.object_name.clone())
+                    .collect();
+                if !contended_objects.is_empty() {
+                    let objs: Vec<String> = contended_objects.into_iter().collect();
+                    parts.push(format!("Tables involved: {}.", objs.join(", ")));
+                }
+                // Show SP names from execution stacks
+                let proc_names: HashSet<String> = deadlocks.iter()
+                    .flat_map(|dl| dl.processes.iter())
+                    .flat_map(|p| p.execution_stack.iter())
+                    .filter_map(|f| f.proc_name.clone())
+                    .collect();
+                if !proc_names.is_empty() {
+                    let procs: Vec<String> = proc_names.into_iter().collect();
+                    parts.push(format!("Stored procedures: {}.", procs.join(", ")));
                 }
             } else if has_lock_events {
                 let did = deadlock_id.unwrap();

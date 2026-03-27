@@ -100,9 +100,31 @@ pub fn matches_filter(event: &XelEvent, filter: &XelFilter) -> bool {
     }
 
     if filter.errors_only {
-        match &event.result {
-            Some(r) if r != "OK" => {}
-            _ => return false,
+        let is_error_result = matches!(&event.result, Some(r) if r != "OK");
+        // Events with error_number are errors, but exclude deadlock error 1205
+        // since deadlocks have their own dedicated filter
+        let has_error_number = event.extra_fields.get("error_number")
+            .and_then(|v| match v {
+                serde_json::Value::Number(n) => n.as_i64(),
+                serde_json::Value::String(s) => s.parse().ok(),
+                _ => None,
+            })
+            .map_or(false, |n| n > 0 && n != 1205);
+        // Exclude deadlock events — they have their own filter
+        let is_deadlock = event.event_name.contains("deadlock")
+            || event.deadlock_graph.is_some()
+            || event.extra_fields.get("deadlock_id")
+                .and_then(|v| match v {
+                    serde_json::Value::Number(n) => n.as_i64(),
+                    serde_json::Value::String(s) => s.parse().ok(),
+                    _ => None,
+                })
+                .map_or(false, |id| id != 0);
+        if is_deadlock {
+            return false;
+        }
+        if !is_error_result && !has_error_number {
+            return false;
         }
     }
 
@@ -229,7 +251,19 @@ pub fn matches_filter(event: &XelEvent, filter: &XelFilter) -> bool {
                         serde_json::Value::Number(n) => n.to_string().contains(&needle),
                         _ => false,
                     }
-                });
+                })
+                // Search deadlock graph and blocked process report XML
+                // (proc names in execution stacks live here, not in object_name)
+                || event
+                    .deadlock_graph
+                    .as_ref()
+                    .map(|s| s.to_lowercase().contains(&needle))
+                    .unwrap_or(false)
+                || event
+                    .blocked_process_report
+                    .as_ref()
+                    .map(|s| s.to_lowercase().contains(&needle))
+                    .unwrap_or(false);
             if !found {
                 return false;
             }

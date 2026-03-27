@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { usePlanState } from '../composables/planState';
+import CollapsiblePanel from './CollapsiblePanel.vue';
 import {
   getOperatorIcon,
   getCostSeverity,
@@ -367,28 +368,26 @@ function highlightText(text: string, term: string): string {
       </div>
       
       <!-- Metrics Grid -->
-      <div class="grid grid-cols-2 gap-2">
-        <div 
-          v-for="metric in runtimeMetrics"
-          :key="metric.label"
-          class="bg-slate-700/50 rounded-lg p-3"
-        >
-          <div class="flex items-center gap-2 text-xs text-slate-400 mb-1">
-            <i :class="'fa-solid ' + metric.icon" class="w-3"></i>
-            {{ metric.label }}
-          </div>
-          <div class="text-sm font-semibold text-slate-200 truncate" :title="metric.value">
-            {{ metric.value }}
+      <CollapsiblePanel title="Metrics" icon="fa-chart-bar" icon-color="text-cyan-400" :badge="runtimeMetrics.length">
+        <div class="grid grid-cols-2 gap-2">
+          <div
+            v-for="metric in runtimeMetrics"
+            :key="metric.label"
+            class="bg-slate-700/50 rounded-lg p-3"
+          >
+            <div class="flex items-center gap-2 text-xs text-slate-400 mb-1">
+              <i :class="'fa-solid ' + metric.icon" class="w-3"></i>
+              {{ metric.label }}
+            </div>
+            <div class="text-sm font-semibold text-slate-200 truncate" :title="metric.value">
+              {{ metric.value }}
+            </div>
           </div>
         </div>
-      </div>
+      </CollapsiblePanel>
       
       <!-- Index Details -->
-      <div v-if="indexDetails" class="bg-slate-700/50 rounded-xl p-4">
-        <h5 class="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-3">
-          <i class="fa-solid fa-key text-amber-400"></i>
-          Index Information
-        </h5>
+      <CollapsiblePanel v-if="indexDetails" title="Index Information" icon="fa-key" icon-color="text-amber-400" panel-class="bg-slate-700/50 rounded-xl p-4">
         <div class="space-y-2 text-sm">
           <div class="flex justify-between">
             <span class="text-slate-400">Table</span>
@@ -409,39 +408,31 @@ function highlightText(text: string, term: string): string {
             </span>
           </div>
         </div>
-      </div>
+      </CollapsiblePanel>
       
       <!-- Output Columns -->
-      <div v-if="outputColumns.length > 0" class="bg-slate-700/50 rounded-xl p-4">
-        <h5 class="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-3">
-          <i class="fa-solid fa-columns text-blue-400"></i>
-          Output Columns ({{ outputColumns.length }})
-        </h5>
+      <CollapsiblePanel v-if="outputColumns.length > 0" title="Output Columns" icon="fa-columns" icon-color="text-blue-400" :badge="outputColumns.length" panel-class="bg-slate-700/50 rounded-xl p-4">
         <div class="flex flex-wrap gap-1">
-          <span 
+          <span
             v-for="col in outputColumns.slice(0, 10)"
             :key="col"
             class="px-2 py-1 bg-slate-600 rounded text-xs text-slate-300 font-mono"
           >
             {{ col }}
           </span>
-          <span 
+          <span
             v-if="outputColumns.length > 10"
             class="px-2 py-1 text-xs text-slate-500"
           >
             +{{ outputColumns.length - 10 }} more
           </span>
         </div>
-      </div>
+      </CollapsiblePanel>
       
       <!-- Predicates -->
-      <div v-if="predicates.length > 0" class="bg-slate-700/50 rounded-xl p-4">
-        <h5 class="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-3">
-          <i class="fa-solid fa-filter text-green-400"></i>
-          Predicates
-        </h5>
+      <CollapsiblePanel v-if="predicates.length > 0" title="Predicates" icon="fa-filter" icon-color="text-green-400" :badge="predicates.length" panel-class="bg-slate-700/50 rounded-xl p-4">
         <div class="space-y-2">
-          <div 
+          <div
             v-for="(pred, idx) in predicates"
             :key="idx"
             class="bg-slate-600/50 rounded-lg p-2"
@@ -450,7 +441,7 @@ function highlightText(text: string, term: string): string {
             <div class="text-xs font-mono text-slate-200 break-all">{{ pred.expression }}</div>
           </div>
         </div>
-      </div>
+      </CollapsiblePanel>
       
       <!-- Parallel Execution -->
       <div v-if="selectedNode.parallel" class="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4">
@@ -461,12 +452,14 @@ function highlightText(text: string, term: string): string {
       </div>
 
       <!-- All Properties (Dynamic) -->
-      <div class="bg-slate-700/50 rounded-xl p-4 mt-4">
-        <div class="flex items-center gap-2 mb-3">
-          <i class="fa-solid fa-list-ul text-indigo-400"></i>
-          <h5 class="text-sm font-semibold text-slate-300 flex-1">All Properties</h5>
-          <span v-if="searchTerm" class="text-xs text-slate-500">{{ filteredProperties.length }} / {{ formattedProperties.length }}</span>
-        </div>
+      <CollapsiblePanel
+        title="All Properties"
+        icon="fa-list-ul"
+        icon-color="text-indigo-400"
+        :badge="searchTerm ? `${filteredProperties.length} / ${formattedProperties.length}` : formattedProperties.length"
+        :collapsed="true"
+        panel-class="bg-slate-700/50 rounded-xl p-4 mt-4"
+      >
         <!-- Search Input -->
         <div class="relative mb-3">
           <i class="fa-solid fa-magnifying-glass absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs pointer-events-none"></i>
@@ -498,7 +491,7 @@ function highlightText(text: string, term: string): string {
         <div v-else class="text-xs text-slate-500 text-center py-3">
           No properties match "{{ searchTerm }}"
         </div>
-      </div>
+      </CollapsiblePanel>
     </div>
   </div>
 </template>

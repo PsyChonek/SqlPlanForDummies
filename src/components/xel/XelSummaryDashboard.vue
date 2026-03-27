@@ -150,7 +150,7 @@ const renderWaitDistribution = () => {
 };
 
 const filterErrors = () => { setFilter({ errorsOnly: true }); setActiveView('table'); };
-const filterDeadlocks = () => { setFilter({ eventNames: ['xml_deadlock_report', 'lock_deadlock', 'lock_deadlock_chain'] }); setActiveView('table'); };
+const filterDeadlocks = () => { setFilter({ eventNames: ['xml_deadlock_report', 'database_xml_deadlock_report', 'lock_deadlock', 'lock_deadlock_chain'] }); setActiveView('table'); };
 const filterBlocked = () => { setFilter({ eventNames: ['blocked_process_report'] }); setActiveView('table'); };
 const filterSession = (sid: number) => { clearFilter(); setFilter({ textSearch: `session_id:${sid}` }); setActiveView('table'); };
 

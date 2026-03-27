@@ -23,6 +23,14 @@ export function checkPowerShell(): Promise<PowerShellStatus> {
   return tauriInvoke<PowerShellStatus>('xel_check_powershell');
 }
 
+export function pickPowerShell(): Promise<string | null> {
+  return tauriInvoke<string | null>('xel_pick_powershell');
+}
+
+export function setPowerShellPath(path: string): Promise<PowerShellStatus> {
+  return tauriInvoke<PowerShellStatus>('xel_set_powershell_path', { path });
+}
+
 export function loadXelFiles(request: XelLoadRequest): Promise<XelSessionStats> {
   return tauriInvoke<XelSessionStats>('xel_load_files', { request });
 }
@@ -72,6 +80,10 @@ export function analyzeBlocking(eventId: number, timeWindowMs?: number): Promise
 
 export function enrichFromDb(): Promise<XelEnrichResult> {
   return tauriInvoke<XelEnrichResult>('xel_enrich_from_db');
+}
+
+export function applyEnrichCache(): Promise<XelEnrichResult> {
+  return tauriInvoke<XelEnrichResult>('xel_apply_enrich_cache');
 }
 
 export function getTransactionObjects(eventId: number): Promise<TransactionObject[]> {

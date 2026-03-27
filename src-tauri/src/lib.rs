@@ -57,6 +57,10 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             xel::commands::xel_check_powershell,
             #[cfg(target_os = "windows")]
+            xel::commands::xel_set_powershell_path,
+            #[cfg(target_os = "windows")]
+            xel::commands::xel_pick_powershell,
+            #[cfg(target_os = "windows")]
             xel::commands::xel_load_files,
             #[cfg(target_os = "windows")]
             xel::commands::xel_query_events,
@@ -78,6 +82,8 @@ pub fn run() {
             xel::commands::xel_analyze_blocking,
             #[cfg(target_os = "windows")]
             xel::commands::xel_enrich_from_db,
+            #[cfg(target_os = "windows")]
+            xel::commands::xel_apply_enrich_cache,
             #[cfg(target_os = "windows")]
             xel::commands::xel_get_columns,
             #[cfg(target_os = "windows")]

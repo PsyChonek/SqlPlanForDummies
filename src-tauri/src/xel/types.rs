@@ -211,6 +211,7 @@ pub struct DeadlockProcess {
     pub id: String,        // e.g. "process28abc123"
     pub spid: Option<i64>,
     pub is_victim: bool,
+    pub xact_id: Option<String>,   // transaction id from deadlock XML (xactid attr)
     pub lock_mode: Option<String>,
     pub wait_resource: Option<String>,
     pub wait_time_ms: Option<i64>,
@@ -223,20 +224,41 @@ pub struct DeadlockProcess {
     pub login_name: Option<String>,
     pub isolation_level: Option<String>,
     pub status: Option<String>,
+    pub tran_count: Option<i64>,
+    pub last_batch_started: Option<String>,
+    pub last_batch_completed: Option<String>,
+    pub ecid: Option<i64>,
+    pub execution_stack: Vec<DeadlockExecutionFrame>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeadlockResource {
-    pub resource_type: String,  // "keylock", "pagelock", "objectlock", "exchangeEvent", etc.
+    pub resource_type: String,  // "keylock", "pagelock", "objectlock", "xactlock", etc.
     pub database_name: Option<String>,
     pub object_name: Option<String>,
     pub index_name: Option<String>,
     pub mode: Option<String>,
+    pub hobt_id: Option<String>,
+    pub file_id: Option<String>,
+    pub page_id: Option<String>,
     /// Processes holding this resource
     pub holders: Vec<DeadlockResourceOwner>,
     /// Processes waiting on this resource
     pub waiters: Vec<DeadlockResourceOwner>,
+}
+
+/// Execution stack frame from a deadlock process
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeadlockExecutionFrame {
+    pub proc_name: Option<String>,
+    pub query_hash: Option<String>,
+    pub query_plan_hash: Option<String>,
+    pub line: Option<i64>,
+    pub sql_handle: Option<String>,
+    /// SQL text from frame body
+    pub sql_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -335,6 +357,8 @@ pub struct ParsedBlockedProcessReport {
     pub blocked_hostname: Option<String>,
     pub blocked_app_name: Option<String>,
     pub blocked_login_name: Option<String>,
+    pub blocked_status: Option<String>,
+    pub blocked_last_batch_started: Option<String>,
     /// Blocking (holder) session info
     pub blocking_spid: Option<i64>,
     pub blocking_xact_id: Option<String>,
@@ -382,4 +406,15 @@ pub struct BlockingChainLink {
     pub event_ids: Vec<u64>,
     /// Who this session is blocked by (if any)
     pub blocked_by_session: Option<i64>,
+    /// Additional context from BPR
+    pub hostname: Option<String>,
+    pub status: Option<String>,
+    pub isolation_level: Option<String>,
+    pub tran_count: Option<i64>,
+    pub last_batch_started: Option<String>,
+    pub wait_time_ms: Option<i64>,
+    /// Transaction ID (xactid from BPR XML) for filtering related events
+    pub xact_id: Option<String>,
+    #[serde(default)]
+    pub execution_stack: Vec<ExecutionFrame>,
 }

@@ -33,6 +33,30 @@ pub async fn xel_check_powershell() -> Result<PowerShellStatus, String> {
 }
 
 #[tauri::command]
+pub async fn xel_set_powershell_path(path: String) -> Result<PowerShellStatus, String> {
+    if !parser::validate_powershell(&path).await {
+        return Err(format!("'{}' is not a valid PowerShell executable", path));
+    }
+    parser::set_custom_powershell_path(Some(path)).await;
+    Ok(parser::check_powershell_availability().await)
+}
+
+#[tauri::command]
+pub async fn xel_pick_powershell() -> Result<Option<String>, String> {
+    use rfd::FileDialog;
+
+    let file = FileDialog::new()
+        .add_filter("PowerShell", &["exe"])
+        .set_title("Locate pwsh.exe or powershell.exe")
+        .pick_file();
+
+    match file {
+        Some(path) => Ok(path.to_str().map(|s| s.to_string())),
+        None => Ok(None),
+    }
+}
+
+#[tauri::command]
 pub async fn xel_load_files(
     request: XelLoadRequest,
     state: tauri::State<'_, XelAppState>,
@@ -565,6 +589,42 @@ pub async fn xel_enrich_from_db(
         unique_objects: cached_objs.len(),
         unique_queries: cached_queries.len(),
         errors,
+    })
+}
+
+#[tauri::command]
+pub async fn xel_apply_enrich_cache(
+    xel_state: tauri::State<'_, XelAppState>,
+    app: tauri::AppHandle,
+) -> Result<XelEnrichResult, String> {
+    let (cached_dbs, cached_objs, cached_queries) = load_enrich_cache(&app);
+
+    if cached_dbs.is_empty() && cached_objs.is_empty() && cached_queries.is_empty() {
+        return Ok(XelEnrichResult {
+            databases_resolved: 0,
+            objects_resolved: 0,
+            query_texts_resolved: 0,
+            unique_databases: 0,
+            unique_objects: 0,
+            unique_queries: 0,
+            errors: vec![],
+        });
+    }
+
+    let mut store = xel_state.store.write().await;
+    let databases_resolved = if !cached_dbs.is_empty() { store.apply_database_names(&cached_dbs) } else { 0 };
+    let mut objects_resolved = if !cached_objs.is_empty() { store.apply_object_names(&cached_objs) } else { 0 };
+    objects_resolved += if !cached_objs.is_empty() { store.apply_direct_object_names(&cached_objs) } else { 0 };
+    let query_texts_resolved = if !cached_queries.is_empty() { store.apply_query_texts(&cached_queries) } else { 0 };
+
+    Ok(XelEnrichResult {
+        databases_resolved,
+        objects_resolved,
+        query_texts_resolved,
+        unique_databases: cached_dbs.len(),
+        unique_objects: cached_objs.len(),
+        unique_queries: cached_queries.len(),
+        errors: vec![],
     })
 }
 

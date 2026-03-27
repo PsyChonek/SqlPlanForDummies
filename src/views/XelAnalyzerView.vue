@@ -1,5 +1,7 @@
 <script setup lang="ts">
+import { ref } from 'vue';
 import { useXelState } from '../composables/useXelState';
+import { useResizePanel } from '../composables/useResizePanel';
 import type { XelView } from '../composables/useXelState';
 import XelFileLoader from '../components/xel/XelFileLoader.vue';
 import XelEventTable from '../components/xel/XelEventTable.vue';
@@ -11,6 +13,28 @@ import XelSummaryDashboard from '../components/xel/XelSummaryDashboard.vue';
 
 const { state, setActiveView, hasData } = useXelState();
 
+const containerRef = ref<HTMLElement | null>(null);
+const HANDLE_WIDTH = 16;
+
+const left = useResizePanel({
+  initial: 280,
+  direction: 'left',
+  getMaxSize: () => {
+    const total = containerRef.value?.clientWidth ?? 1200;
+    const rightSize = right.collapsed.value ? 0 : right.size.value;
+    return total - rightSize - HANDLE_WIDTH * 2;
+  },
+});
+const right = useResizePanel({
+  initial: 360,
+  direction: 'right',
+  getMaxSize: () => {
+    const total = containerRef.value?.clientWidth ?? 1200;
+    const leftSize = left.collapsed.value ? 0 : left.size.value;
+    return total - leftSize - HANDLE_WIDTH * 2;
+  },
+});
+
 const tabs: { id: XelView; label: string; icon: string }[] = [
   { id: 'table', label: 'Events', icon: 'fa-table' },
   { id: 'timeline', label: 'Timeline', icon: 'fa-chart-gantt' },
@@ -20,14 +44,27 @@ const tabs: { id: XelView; label: string; icon: string }[] = [
 </script>
 
 <template>
-  <div class="flex-1 gap-4 p-4 overflow-hidden grid grid-cols-[280px_1fr_360px] grid-rows-[1fr]">
+  <div ref="containerRef" class="flex-1 flex p-4 gap-0 overflow-hidden">
     <!-- Left: File Loader -->
-    <aside class="overflow-hidden flex flex-col">
+    <aside
+      v-show="!left.collapsed.value"
+      class="overflow-hidden flex flex-col shrink-0"
+      :style="{ width: left.size.value + 'px' }"
+    >
       <XelFileLoader />
     </aside>
 
+    <!-- Left Handle -->
+    <div
+      class="shrink-0 w-4 flex items-center justify-center cursor-col-resize z-10"
+      @pointerdown="left.onPointerDown"
+      @dblclick="left.onDoubleClick"
+    >
+      <div class="w-0.5 h-8 rounded-full bg-slate-600"></div>
+    </div>
+
     <!-- Center: Tabbed Content -->
-    <main class="overflow-hidden flex flex-col bg-slate-800 rounded-2xl shadow-xl">
+    <main class="overflow-hidden flex flex-col bg-slate-800 rounded-2xl shadow-xl flex-1 min-w-0">
       <!-- Tab bar -->
       <div class="flex items-center bg-slate-700 border-b border-slate-600 rounded-t-2xl shrink-0">
         <button
@@ -81,8 +118,21 @@ const tabs: { id: XelView; label: string; icon: string }[] = [
       </div>
     </main>
 
+    <!-- Right Handle -->
+    <div
+      class="shrink-0 w-4 flex items-center justify-center cursor-col-resize z-10"
+      @pointerdown="right.onPointerDown"
+      @dblclick="right.onDoubleClick"
+    >
+      <div class="w-0.5 h-8 rounded-full bg-slate-600"></div>
+    </div>
+
     <!-- Right: Event Details -->
-    <aside class="overflow-hidden flex flex-col">
+    <aside
+      v-show="!right.collapsed.value"
+      class="overflow-hidden flex flex-col shrink-0"
+      :style="{ width: right.size.value + 'px' }"
+    >
       <XelEventDetails />
     </aside>
   </div>

@@ -153,6 +153,7 @@ export interface DeadlockProcess {
   id: string;
   spid: number | null;
   isVictim: boolean;
+  xactId: string | null;
   lockMode: string | null;
   waitResource: string | null;
   waitTimeMs: number | null;
@@ -165,6 +166,11 @@ export interface DeadlockProcess {
   loginName: string | null;
   isolationLevel: string | null;
   status: string | null;
+  tranCount: number | null;
+  lastBatchStarted: string | null;
+  lastBatchCompleted: string | null;
+  ecid: number | null;
+  executionStack: DeadlockExecutionFrame[];
 }
 
 export interface DeadlockResource {
@@ -173,6 +179,9 @@ export interface DeadlockResource {
   objectName: string | null;
   indexName: string | null;
   mode: string | null;
+  hobtId: string | null;
+  fileId: string | null;
+  pageId: string | null;
   holders: DeadlockResourceOwner[];
   waiters: DeadlockResourceOwner[];
 }
@@ -180,6 +189,15 @@ export interface DeadlockResource {
 export interface DeadlockResourceOwner {
   processId: string;
   mode: string | null;
+}
+
+export interface DeadlockExecutionFrame {
+  procName: string | null;
+  queryHash: string | null;
+  queryPlanHash: string | null;
+  line: number | null;
+  sqlHandle: string | null;
+  sqlText: string | null;
 }
 
 export interface WaitTypeStat {
@@ -239,6 +257,14 @@ export interface BlockingChainLink {
   database: string | null;
   eventIds: number[];
   blockedBySession: number | null;
+  hostname: string | null;
+  status: string | null;
+  isolationLevel: string | null;
+  tranCount: number | null;
+  lastBatchStarted: string | null;
+  waitTimeMs: number | null;
+  xactId: string | null;
+  executionStack: ExecutionFrame[];
 }
 
 export interface XelProblemStats {

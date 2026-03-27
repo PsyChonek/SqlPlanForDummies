@@ -6,8 +6,31 @@ import PlanLoader from '../components/PlanLoader.vue';
 import AnalysisPanel from '../components/AnalysisPanel.vue';
 import PlanComparison from '../components/PlanComparison.vue';
 import { usePlanState } from '../composables/planState';
+import { useResizePanel } from '../composables/useResizePanel';
 
 const { state, loadComparisonPlan, toggleComparisonMode } = usePlanState();
+
+const containerRef = ref<HTMLElement | null>(null);
+const HANDLE_WIDTH = 16;
+
+const left = useResizePanel({
+  initial: 320,
+  direction: 'left',
+  getMaxSize: () => {
+    const total = containerRef.value?.clientWidth ?? 1200;
+    const rightSize = right.collapsed.value ? 0 : right.size.value;
+    return total - rightSize - HANDLE_WIDTH * 2;
+  },
+});
+const right = useResizePanel({
+  initial: 380,
+  direction: 'right',
+  getMaxSize: () => {
+    const total = containerRef.value?.clientWidth ?? 1200;
+    const leftSize = left.collapsed.value ? 0 : left.size.value;
+    return total - leftSize - HANDLE_WIDTH * 2;
+  },
+});
 
 type MainTab = 'execution' | 'analysis';
 const activeMainTab = ref<MainTab>('execution');
@@ -32,17 +55,28 @@ const handleComparisonFile = async (event: Event) => {
 
 <template>
   <div class="flex flex-col h-full overflow-hidden">
-    <!-- Main Grid -->
-    <div
-      class="flex-1 gap-4 p-4 overflow-hidden grid grid-cols-[320px_1fr_380px] grid-rows-[1fr]"
-    >
+    <!-- Main layout -->
+    <div ref="containerRef" class="flex-1 flex p-4 gap-0 overflow-hidden">
       <!-- Left Sidebar: Plan Loader -->
-      <aside class="overflow-hidden">
+      <aside
+        v-show="!left.collapsed.value"
+        class="overflow-hidden shrink-0"
+        :style="{ width: left.size.value + 'px' }"
+      >
         <PlanLoader />
       </aside>
 
-      <!-- Main: Tabbed panel (Execution Plan / Plan Analysis) -->
-      <main class="overflow-hidden flex flex-col bg-slate-800 rounded-2xl shadow-xl">
+      <!-- Left Handle -->
+      <div
+        class="shrink-0 w-4 flex items-center justify-center cursor-col-resize z-10"
+        @pointerdown="left.onPointerDown"
+        @dblclick="left.onDoubleClick"
+      >
+        <div class="w-0.5 h-8 rounded-full bg-slate-600"></div>
+      </div>
+
+      <!-- Main: Tabbed panel -->
+      <main class="overflow-hidden flex flex-col bg-slate-800 rounded-2xl shadow-xl flex-1 min-w-0">
         <!-- Tab bar -->
         <div class="flex items-center bg-slate-700 border-b border-slate-600 rounded-t-2xl shrink-0">
           <button
@@ -115,8 +149,21 @@ const handleComparisonFile = async (event: Event) => {
         </div>
       </main>
 
+      <!-- Right Handle -->
+      <div
+        class="shrink-0 w-4 flex items-center justify-center cursor-col-resize z-10"
+        @pointerdown="right.onPointerDown"
+        @dblclick="right.onDoubleClick"
+      >
+        <div class="w-0.5 h-8 rounded-full bg-slate-600"></div>
+      </div>
+
       <!-- Right Sidebar: Node Details or Comparison -->
-      <aside class="overflow-hidden">
+      <aside
+        v-show="!right.collapsed.value"
+        class="overflow-hidden shrink-0"
+        :style="{ width: right.size.value + 'px' }"
+      >
         <PlanComparison v-if="state.comparisonMode && state.comparisonPlan" />
         <NodeDetails v-else />
       </aside>

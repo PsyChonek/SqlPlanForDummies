@@ -2,14 +2,65 @@
 import { ref, watch, computed } from 'vue';
 import { useXelState } from '../../composables/useXelState';
 import * as xelApi from '../../composables/xelTauriApi';
+import CollapsiblePanel from '../CollapsiblePanel.vue';
 import {
   getEventSeverity, getEventSeverityColor, getEventIcon,
   formatDuration, formatNumber, formatTimestampFull,
   getLockModeDescription,
 } from '../../types/xel';
-import type { BlockingAnalysis, TransactionObject, XelEvent } from '../../types/xel';
+import type { BlockingAnalysis, ParsedDeadlockGraph, TransactionObject, XelEvent } from '../../types/xel';
 
 const { state, selectEvent, setFilter, clearFilter } = useXelState();
+
+const spidForProcess = (dl: ParsedDeadlockGraph, processId: string): string => {
+  const proc = dl.processes.find(p => p.id === processId);
+  return proc?.spid ? `S${proc.spid}` : processId.replace(/^process/, '').slice(0, 8);
+};
+
+interface GroupedResource {
+  resourceType: string;
+  objectName: string | null;
+  indexName: string | null;
+  count: number;
+  holders: { label: string; mode: string }[];
+  waiters: { label: string; mode: string }[];
+}
+
+const groupResources = (dl: ParsedDeadlockGraph): GroupedResource[] => {
+  const map = new Map<string, GroupedResource>();
+  for (const res of dl.resources) {
+    if (res.resourceType === 'exchangeEvent') continue;
+    const key = `${res.resourceType}|${res.objectName ?? ''}|${res.indexName ?? ''}`;
+    let group = map.get(key);
+    if (!group) {
+      group = {
+        resourceType: res.resourceType,
+        objectName: res.objectName,
+        indexName: res.indexName,
+        count: 0,
+        holders: [],
+        waiters: [],
+      };
+      map.set(key, group);
+    }
+    group.count++;
+    for (const h of res.holders) {
+      const label = spidForProcess(dl, h.processId);
+      const mode = h.mode ?? '?';
+      if (!group.holders.some(x => x.label === label && x.mode === mode)) {
+        group.holders.push({ label, mode });
+      }
+    }
+    for (const w of res.waiters) {
+      const label = spidForProcess(dl, w.processId);
+      const mode = w.mode ?? '?';
+      if (!group.waiters.some(x => x.label === label && x.mode === mode)) {
+        group.waiters.push({ label, mode });
+      }
+    }
+  }
+  return Array.from(map.values());
+};
 
 const copied = ref('');
 const copyText = async (text: string, label: string) => {
@@ -275,8 +326,12 @@ const filterBySession = (sessionId: number) => {
 };
 
 const filterByColumn = (column: string, value: string) => {
+  let filterValue = value;
+  if (column === 'attach_activity_id' || column === 'attach_activity_id_xfer') {
+    filterValue = value.split(':')[0];
+  }
   clearFilter();
-  setFilter({ textSearch: `${column}:${value}` });
+  setFilter({ textSearch: `${column}:${filterValue}` });
 };
 
 const roleColor = (role: string) => {
@@ -322,6 +377,28 @@ const diagnosisLabel = (d: string) => {
     mixed: 'Mixed Waits',
   };
   return labels[d] || d;
+};
+
+const diagnosisIcon = (d: string): string => {
+  if (d === 'deadlock' || d === 'likely_deadlock') return 'fa-skull-crossbones';
+  if (d === 'io_starvation') return 'fa-hard-drive';
+  if (d.startsWith('lock')) return 'fa-lock';
+  if (d === 'latch_contention') return 'fa-bolt';
+  if (d === 'network_bottleneck') return 'fa-network-wired';
+  if (d === 'memory_pressure') return 'fa-memory';
+  if (d === 'cpu_pressure') return 'fa-microchip';
+  return 'fa-question-circle';
+};
+
+const diagnosisIconColor = (d: string): string => {
+  if (d === 'deadlock' || d === 'likely_deadlock') return 'text-red-400';
+  if (d === 'io_starvation') return 'text-blue-400';
+  if (d.startsWith('lock')) return 'text-red-400';
+  if (d === 'latch_contention') return 'text-amber-400';
+  if (d === 'network_bottleneck') return 'text-purple-400';
+  if (d === 'memory_pressure') return 'text-pink-400';
+  if (d === 'cpu_pressure') return 'text-cyan-400';
+  return 'text-slate-400';
 };
 
 const categoryDotColor = (cat: string) => {
@@ -373,32 +450,36 @@ const waitCategoryBreakdown = computed(() => {
   <div class="flex flex-col h-full bg-slate-800 rounded-2xl shadow-xl overflow-hidden">
     <template v-if="state.selectedEvent">
       <!-- Header -->
-      <div class="shrink-0 px-4 py-3 bg-slate-700 border-b border-slate-600">
+      <div class="shrink-0 px-3 py-2.5 bg-slate-700 border-b border-slate-600">
         <div class="flex items-center gap-2">
           <i
             :class="['fa-solid', getEventIcon(state.selectedEvent.eventName)]"
             :style="{ color: getEventSeverityColor(getEventSeverity(state.selectedEvent)) }"
+            class="text-sm"
           ></i>
           <h3 class="text-sm font-semibold text-slate-200 truncate flex-1">
             {{ state.selectedEvent.eventName }}
           </h3>
           <button
             @click="copyText(buildLlmPrompt(), 'llm')"
-            class="shrink-0 flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium transition-colors"
+            class="shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors"
             :class="copied === 'llm' ? 'bg-green-600/30 text-green-300' : 'bg-indigo-600/30 text-indigo-300 hover:bg-indigo-600/50 hover:text-indigo-200'"
             title="Copy all event details formatted for LLM analysis"
           >
             <i :class="copied === 'llm' ? 'fa-solid fa-check' : 'fa-solid fa-robot'" class="text-[10px]"></i>
-            {{ copied === 'llm' ? 'Copied!' : 'Copy for AI' }}
+            {{ copied === 'llm' ? 'Copied!' : 'AI' }}
           </button>
         </div>
-        <p class="text-xs text-slate-400 mt-1">
-          {{ formatTimestampFull(state.selectedEvent.timestamp) }}
-        </p>
+        <!-- Compact meta row -->
+        <div class="flex items-center gap-2 mt-1 text-[10px] text-slate-400 flex-wrap">
+          <span>{{ formatTimestampFull(state.selectedEvent.timestamp) }}</span>
+          <span v-if="state.selectedEvent.sessionId !== null" class="text-slate-500">S{{ state.selectedEvent.sessionId }}</span>
+          <span v-if="state.selectedEvent.databaseName" class="text-slate-500 truncate">{{ state.selectedEvent.databaseName }}</span>
+        </div>
       </div>
 
       <!-- Metrics -->
-      <div class="flex-1 overflow-auto px-4 py-3 space-y-3">
+      <div class="flex-1 overflow-auto px-3 py-2 space-y-2">
         <!-- Blocking Analysis (auto-loaded) -->
         <div v-if="isBlockingRelated(state.selectedEvent)">
           <div v-if="analysisLoading" class="flex items-center gap-2 text-xs text-slate-400 py-1">
@@ -407,15 +488,13 @@ const waitCategoryBreakdown = computed(() => {
           </div>
 
           <!-- Analysis Results -->
-          <div v-if="showAnalysis && analysis" class="space-y-3">
-            <div class="flex items-center justify-between">
-              <h4 class="text-xs font-semibold text-indigo-400 uppercase tracking-wider">
-                <i class="fa-solid fa-link mr-1"></i>Blocking Analysis
-              </h4>
-              <div class="flex items-center gap-1">
+          <div v-if="showAnalysis && analysis" class="space-y-2">
+            <CollapsiblePanel title="Blocking Analysis" icon="fa-link" icon-color="text-indigo-400" header-class="text-xs uppercase tracking-wider">
+              <template #header-right>
                 <select
                   v-model.number="analysisWindow"
                   @change="loadAnalysis"
+                  @click.stop
                   class="bg-slate-700 text-slate-300 border border-slate-600 rounded px-1 py-0.5 outline-none text-xs"
                 >
                   <option :value="15">15s</option>
@@ -425,25 +504,37 @@ const waitCategoryBreakdown = computed(() => {
                   <option :value="300">5min</option>
                 </select>
                 <button
-                  @click="showAnalysis = false; analysis = null"
+                  @click.stop="showAnalysis = false; analysis = null"
                   class="text-xs text-slate-500 hover:text-slate-300 px-1"
                 >
                   <i class="fa-solid fa-xmark"></i>
                 </button>
-              </div>
-            </div>
+              </template>
 
-            <!-- Summary -->
-            <div class="text-xs text-slate-300 bg-slate-900/50 rounded-lg px-3 py-2 leading-relaxed">
-              {{ analysis.summary }}
-            </div>
+              <!-- Summary + Diagnosis -->
+              <div class="bg-slate-900/50 rounded-lg px-3 py-2">
+                <div v-if="analysis.diagnosis && analysis.diagnosis !== 'no_waits'" class="flex items-center gap-1.5 mb-1.5">
+                  <span
+                    class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold"
+                    :class="{
+                      'bg-red-500/20 text-red-400': analysis.diagnosis === 'deadlock' || analysis.diagnosis === 'likely_deadlock' || analysis.diagnosis.startsWith('lock'),
+                      'bg-blue-500/20 text-blue-400': analysis.diagnosis === 'io_starvation',
+                      'bg-amber-500/20 text-amber-400': analysis.diagnosis === 'latch_contention',
+                      'bg-purple-500/20 text-purple-400': analysis.diagnosis === 'network_bottleneck',
+                      'bg-pink-500/20 text-pink-400': analysis.diagnosis === 'memory_pressure',
+                      'bg-cyan-500/20 text-cyan-400': analysis.diagnosis === 'cpu_pressure',
+                      'bg-slate-600/50 text-slate-400': !['deadlock','likely_deadlock','io_starvation','latch_contention','network_bottleneck','memory_pressure','cpu_pressure'].includes(analysis.diagnosis) && !analysis.diagnosis.startsWith('lock'),
+                    }"
+                  >
+                    <i :class="['fa-solid', diagnosisIcon(analysis.diagnosis)]" class="text-[9px]"></i>
+                    {{ diagnosisLabel(analysis.diagnosis) }}
+                  </span>
+                </div>
+                <p class="text-xs text-slate-300 leading-relaxed">{{ analysis.summary }}</p>
+              </div>
 
             <!-- Deadlock Graphs -->
-            <div v-if="analysis.deadlocks.length > 0">
-              <h5 class="text-xs font-semibold text-red-400 uppercase tracking-wider mb-1.5">
-                <i class="fa-solid fa-skull-crossbones mr-1 text-[10px]"></i>
-                Deadlock{{ analysis.deadlocks.length > 1 ? 's' : '' }} ({{ analysis.deadlocks.length }})
-              </h5>
+            <CollapsiblePanel v-if="analysis.deadlocks.length > 0" :title="'Deadlock' + (analysis.deadlocks.length > 1 ? 's' : '')" icon="fa-skull-crossbones" icon-color="text-red-400" :badge="analysis.deadlocks.length" header-class="text-xs uppercase tracking-wider">
               <div class="space-y-2">
                 <div
                   v-for="dl in analysis.deadlocks"
@@ -465,67 +556,110 @@ const waitCategoryBreakdown = computed(() => {
                         <span class="text-slate-400">
                           Session {{ proc.spid ?? '?' }}
                         </span>
+                        <span v-if="proc.ecid && proc.ecid > 0" class="text-slate-500 text-[10px]">({{ proc.ecid }} parallel threads)</span>
                         <span v-if="proc.appName" class="text-slate-500 truncate text-[10px]">({{ proc.appName }})</span>
                       </div>
-                      <div class="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-slate-400 ml-4">
+                      <div class="grid grid-cols-[5.5rem_1fr] gap-x-2 gap-y-0.5 text-slate-400 ml-5 text-[10px]">
                         <template v-if="proc.waitResource">
-                          <span>Wait resource</span>
-                          <span class="text-yellow-300 font-mono text-[10px]">{{ proc.waitResource }}</span>
+                          <span class="text-slate-500">Wait resource</span>
+                          <span class="text-yellow-300 font-mono break-all">{{ proc.waitResource }}</span>
                         </template>
                         <template v-if="proc.lockMode">
-                          <span>Lock mode</span>
-                          <span class="text-yellow-300" :title="getLockModeDescription(proc.lockMode) ?? ''">{{ proc.lockMode }}<span v-if="getLockModeDescription(proc.lockMode)" class="text-yellow-300/50 text-[9px] ml-1">{{ getLockModeDescription(proc.lockMode) }}</span></span>
+                          <span class="text-slate-500">Lock mode</span>
+                          <span class="text-yellow-300"><span class="font-semibold">{{ proc.lockMode }}</span><span v-if="getLockModeDescription(proc.lockMode)" class="text-yellow-300/50 ml-1">{{ getLockModeDescription(proc.lockMode) }}</span></span>
                         </template>
                         <template v-if="proc.isolationLevel">
-                          <span>Isolation</span>
+                          <span class="text-slate-500">Isolation</span>
                           <span class="text-slate-300">{{ proc.isolationLevel }}</span>
                         </template>
+                        <template v-if="proc.waitTimeMs">
+                          <span class="text-slate-500">Wait time</span>
+                          <span class="text-slate-300">{{ proc.waitTimeMs.toLocaleString() }}ms</span>
+                        </template>
                         <template v-if="proc.transactionName">
-                          <span>Transaction</span>
+                          <span class="text-slate-500">Transaction</span>
                           <span class="text-slate-300">{{ proc.transactionName }}</span>
                         </template>
-                        <template v-if="proc.waitTimeMs">
-                          <span>Wait time</span>
-                          <span class="text-slate-300">{{ proc.waitTimeMs }}ms</span>
+                        <template v-if="proc.tranCount">
+                          <span class="text-slate-500">Tran count</span>
+                          <span class="text-slate-300">{{ proc.tranCount }}</span>
+                        </template>
+                        <template v-if="proc.databaseName">
+                          <span class="text-slate-500">Database</span>
+                          <span class="text-slate-300">{{ proc.databaseName }}</span>
+                        </template>
+                        <template v-if="proc.hostname">
+                          <span class="text-slate-500">Host</span>
+                          <span class="text-slate-300">{{ proc.hostname }}</span>
+                        </template>
+                        <template v-if="proc.loginName">
+                          <span class="text-slate-500">Login</span>
+                          <span class="text-slate-300">{{ proc.loginName }}</span>
                         </template>
                       </div>
-                      <div v-if="proc.inputBuffer" class="mt-1 ml-4">
+                      <!-- Execution Stack -->
+                      <div v-if="proc.executionStack?.length > 0" class="mt-1 ml-5">
+                        <span class="text-slate-500 text-[10px]">Execution stack:</span>
+                        <div v-for="(frame, fi) in proc.executionStack" :key="fi"
+                          class="text-[10px] font-mono bg-slate-900/40 px-2 py-0.5 rounded mt-0.5">
+                          <div class="flex flex-wrap gap-x-2">
+                            <span v-if="frame.procName" class="text-indigo-300">{{ frame.procName }}</span>
+                            <span v-if="frame.line" class="text-slate-500">line {{ frame.line }}</span>
+                            <span v-if="frame.queryHash" class="text-slate-500">hash: {{ frame.queryHash }}</span>
+                            <span v-if="frame.queryPlanHash" class="text-slate-500">plan: {{ frame.queryPlanHash }}</span>
+                          </div>
+                          <div v-if="frame.sqlText" class="text-slate-400 mt-0.5 whitespace-pre-wrap break-all">{{ frame.sqlText }}</div>
+                        </div>
+                      </div>
+                      <div v-if="proc.inputBuffer" class="mt-1 ml-5">
+                        <span class="text-slate-500 text-[10px]">Input buffer:</span>
                         <pre class="text-[10px] font-mono px-2 py-1 rounded overflow-auto max-h-16 whitespace-pre-wrap break-all"
                           :class="proc.isVictim ? 'text-red-300/70 bg-red-950/40' : 'text-amber-300/70 bg-amber-950/30'"
                         >{{ proc.inputBuffer }}</pre>
                       </div>
-                      <div v-if="proc.spid" class="mt-1 ml-4">
-                        <button
+                      <div v-if="proc.spid || proc.xactId" class="mt-1 ml-5 flex flex-wrap gap-2">
+                        <button v-if="proc.spid"
                           @click="filterBySession(proc.spid!)"
                           class="text-[10px] text-indigo-400 hover:text-indigo-300"
                         >
-                          <i class="fa-solid fa-filter mr-0.5"></i>Filter Session {{ proc.spid }}
+                          <i class="fa-solid fa-filter mr-0.5"></i>Session {{ proc.spid }}
+                        </button>
+                        <button v-if="proc.xactId"
+                          @click="filterByColumn('transaction_id', proc.xactId!)"
+                          class="text-[10px] text-emerald-400 hover:text-emerald-300"
+                        >
+                          <i class="fa-solid fa-filter mr-0.5"></i>Transaction
                         </button>
                       </div>
                     </div>
                   </div>
 
-                  <!-- Resources -->
+                  <!-- Resources (filter out exchangeEvent noise) -->
                   <div v-if="dl.resources.length > 0">
                     <div class="text-[10px] text-slate-500 font-semibold uppercase mb-0.5">Contended Resources</div>
                     <div class="space-y-0.5">
                       <div
-                        v-for="(res, ri) in dl.resources"
-                        :key="ri"
+                        v-for="(grp, gi) in groupResources(dl)"
+                        :key="gi"
                         class="text-[10px] text-slate-400 bg-slate-800/50 rounded px-2 py-1"
                       >
-                        <span class="text-yellow-300 font-medium">{{ res.resourceType }}</span>
-                        <span v-if="res.objectName" class="text-slate-300 ml-1">{{ res.objectName }}</span>
-                        <span v-if="res.indexName" class="text-slate-500 ml-1">({{ res.indexName }})</span>
-                        <span v-if="res.mode" class="text-slate-500 ml-1">mode: {{ res.mode }}</span>
-                        <div class="flex gap-2 mt-0.5">
-                          <span v-for="h in res.holders" :key="'h-' + h.processId" class="text-green-400">
-                            holds: {{ h.mode }}
+                        <span class="text-yellow-300 font-medium">{{ grp.resourceType }}</span>
+                        <span v-if="grp.objectName" class="text-slate-300 ml-1">{{ grp.objectName }}</span>
+                        <span v-if="grp.indexName" class="text-slate-500 ml-1">({{ grp.indexName }})</span>
+                        <span v-if="grp.count > 1" class="text-slate-500 ml-1">&times;{{ grp.count }}</span>
+                        <div class="flex flex-wrap gap-2 mt-0.5">
+                          <span v-for="(h, hi) in grp.holders" :key="'h-' + hi" class="text-green-400">
+                            <span class="text-green-500/70">{{ h.label }}</span> holds: {{ h.mode }}
                           </span>
-                          <span v-for="w in res.waiters" :key="'w-' + w.processId" class="text-red-400">
-                            waits: {{ w.mode }}
+                          <span v-for="(w, wi) in grp.waiters" :key="'w-' + wi" class="text-red-400">
+                            <span class="text-red-500/70">{{ w.label }}</span> waits: {{ w.mode }}
                           </span>
                         </div>
+                      </div>
+                      <div v-if="dl.resources.filter(r => r.resourceType === 'exchangeEvent').length > 0"
+                        class="text-[10px] text-slate-500 italic"
+                      >
+                        + {{ dl.resources.filter(r => r.resourceType === 'exchangeEvent').length }} parallel exchange events (hidden)
                       </div>
                     </div>
                   </div>
@@ -538,15 +672,10 @@ const waitCategoryBreakdown = computed(() => {
                   </button>
                 </div>
               </div>
-            </div>
+            </CollapsiblePanel>
 
             <!-- Deadlock Lock Events (confirmed via deadlock_id) -->
-            <div v-if="analysis.deadlockId && analysis.deadlockLockEvents.length > 0">
-              <h5 class="text-xs font-semibold text-red-400 uppercase tracking-wider mb-1.5">
-                <i class="fa-solid fa-skull-crossbones mr-1 text-[10px]"></i>
-                Deadlock Lock Events
-                <span class="text-red-300/70 font-normal ml-1">(deadlock_id: {{ analysis.deadlockId }})</span>
-              </h5>
+            <CollapsiblePanel v-if="analysis.deadlockId && analysis.deadlockLockEvents.length > 0" title="Deadlock Lock Events" icon="fa-skull-crossbones" icon-color="text-red-400" :badge="analysis.deadlockLockEvents.length" header-class="text-xs uppercase tracking-wider">
               <div class="space-y-1.5">
                 <div
                   v-for="ev in analysis.deadlockLockEvents"
@@ -570,7 +699,7 @@ const waitCategoryBreakdown = computed(() => {
                       #{{ ev.id }}
                     </button>
                   </div>
-                  <div class="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-slate-400">
+                  <div class="grid grid-cols-[5.5rem_1fr] gap-x-2 gap-y-0.5 text-[10px] text-slate-400">
                     <template v-if="ev.resourceType">
                       <span>Resource Type</span>
                       <span class="text-yellow-300 font-medium">{{ ev.resourceType }}</span>
@@ -585,7 +714,7 @@ const waitCategoryBreakdown = computed(() => {
                     </template>
                     <template v-if="ev.resourceDescription">
                       <span>Resource</span>
-                      <span class="text-slate-300 font-mono text-[10px]">{{ ev.resourceDescription }}</span>
+                      <span class="text-slate-300 font-mono break-all">{{ ev.resourceDescription }}</span>
                     </template>
                     <template v-if="ev.durationUs !== null">
                       <span>Duration</span>
@@ -650,11 +779,10 @@ const waitCategoryBreakdown = computed(() => {
                   </div>
                 </div>
               </div>
-            </div>
+            </CollapsiblePanel>
 
             <!-- Blocking Chain -->
-            <div v-if="analysis.blockingChain.length > 0">
-              <h5 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Blocking Chain</h5>
+            <CollapsiblePanel v-if="analysis.blockingChain.length > 0" title="Blocking Chain" icon="fa-link" icon-color="text-orange-400" :badge="analysis.blockingChain.length" header-class="text-xs uppercase tracking-wider">
               <div class="space-y-1.5">
                 <div
                   v-for="link in analysis.blockingChain"
@@ -669,27 +797,45 @@ const waitCategoryBreakdown = computed(() => {
                       </span>
                       <span class="text-slate-400">Session {{ link.sessionId }}</span>
                     </div>
-                    <button
-                      @click="filterBySession(link.sessionId)"
-                      class="text-indigo-400 hover:text-indigo-300 text-[10px]"
-                      title="Filter by this session"
-                    >
-                      <i class="fa-solid fa-filter"></i>
-                    </button>
+                    <div class="flex items-center gap-1.5">
+                      <button
+                        v-if="link.xactId"
+                        @click="filterByColumn('transaction_id', link.xactId)"
+                        class="text-indigo-400 hover:text-indigo-300 text-[10px]"
+                        :title="`Filter by transaction ${link.xactId}`"
+                      >
+                        <i class="fa-solid fa-filter"></i> TXN
+                      </button>
+                      <button
+                        @click="filterBySession(link.sessionId)"
+                        class="text-slate-500 hover:text-slate-300 text-[10px]"
+                        title="Filter by session"
+                      >
+                        <i class="fa-solid fa-filter"></i> S{{ link.sessionId }}
+                      </button>
+                    </div>
                   </div>
 
-                  <div class="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-slate-400">
+                  <div class="grid grid-cols-[5.5rem_1fr] gap-x-2 gap-y-0.5 text-[10px] text-slate-400">
                     <template v-if="link.blockedBySession">
                       <span>Blocked by</span>
                       <span class="text-red-400">Session {{ link.blockedBySession }}</span>
                     </template>
                     <template v-if="link.waitResource">
                       <span>Resource</span>
-                      <span class="text-yellow-300 font-mono text-[10px]">{{ link.waitResource }}</span>
+                      <span class="text-yellow-300 font-mono break-all">{{ link.waitResource }}</span>
                     </template>
                     <template v-if="link.lockMode">
                       <span>Lock mode</span>
                       <span class="text-yellow-300" :title="getLockModeDescription(link.lockMode) ?? ''">{{ link.lockMode }}<span v-if="getLockModeDescription(link.lockMode)" class="text-yellow-300/50 text-[9px] ml-1">{{ getLockModeDescription(link.lockMode) }}</span></span>
+                    </template>
+                    <template v-if="link.status">
+                      <span>Status</span>
+                      <span :class="link.status === 'sleeping' ? 'text-amber-400' : link.status === 'running' ? 'text-green-400' : 'text-orange-400'">{{ link.status }}</span>
+                    </template>
+                    <template v-if="link.hostname">
+                      <span>Host</span>
+                      <span class="text-slate-300 truncate">{{ link.hostname }}</span>
                     </template>
                     <template v-if="link.appName">
                       <span>App</span>
@@ -698,6 +844,41 @@ const waitCategoryBreakdown = computed(() => {
                     <template v-if="link.username">
                       <span>User</span>
                       <span class="text-slate-300">{{ link.username }}</span>
+                    </template>
+                    <template v-if="link.isolationLevel">
+                      <span>Isolation</span>
+                      <span class="text-slate-300">{{ link.isolationLevel }}</span>
+                    </template>
+                    <template v-if="link.xactId">
+                      <span>Transaction ID</span>
+                      <button
+                        @click="filterByColumn('transaction_id', link.xactId)"
+                        class="text-indigo-400 hover:text-indigo-300 font-mono cursor-pointer"
+                        :title="`Filter events by transaction_id:${link.xactId}`"
+                      >{{ link.xactId }}</button>
+                    </template>
+                    <template v-if="link.tranCount">
+                      <span>Tran count</span>
+                      <span class="text-slate-300">{{ link.tranCount }}</span>
+                    </template>
+                    <template v-if="link.waitTimeMs">
+                      <span>Wait time</span>
+                      <span class="text-orange-300">{{ (link.waitTimeMs / 1000).toFixed(1) }}s</span>
+                    </template>
+                    <template v-if="link.lastBatchStarted">
+                      <span>Last batch</span>
+                      <span class="text-slate-300">{{ link.lastBatchStarted }}</span>
+                    </template>
+                  </div>
+
+                  <!-- Execution Stack -->
+                  <div v-if="link.executionStack?.some((f: any) => f.queryHash)" class="mt-1.5">
+                    <template v-for="(frame, fi) in link.executionStack" :key="fi">
+                      <div v-if="frame.queryHash" class="text-[10px] font-mono text-slate-400 bg-slate-900/40 px-2 py-0.5 rounded mt-0.5">
+                        <span :class="link.role === 'root_blocker' ? 'text-red-300' : 'text-indigo-300'">{{ frame.queryHash }}</span>
+                        <span v-if="frame.queryPlanHash" class="text-slate-500 ml-1">plan: {{ frame.queryPlanHash }}</span>
+                        <span v-if="frame.line" class="text-slate-500 ml-1">line {{ frame.line }}</span>
+                      </div>
                     </template>
                   </div>
 
@@ -723,13 +904,10 @@ const waitCategoryBreakdown = computed(() => {
                   </div>
                 </div>
               </div>
-            </div>
+            </CollapsiblePanel>
 
             <!-- Blocked Process Reports -->
-            <div v-if="analysis.blockedProcessReports.length > 0">
-              <h5 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
-                Blocked Process Reports ({{ analysis.blockedProcessReports.length }})
-              </h5>
+            <CollapsiblePanel v-if="analysis.blockedProcessReports.length > 0" title="Blocked Process Reports" icon="fa-ban" icon-color="text-orange-400" :badge="analysis.blockedProcessReports.length" header-class="text-xs uppercase tracking-wider">
               <div class="space-y-1.5">
                 <div
                   v-for="bpr in analysis.blockedProcessReports"
@@ -748,10 +926,26 @@ const waitCategoryBreakdown = computed(() => {
                       #{{ bpr.eventId }}
                     </button>
                   </div>
-                  <div class="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-slate-400">
+                  <div class="grid grid-cols-[5.5rem_1fr] gap-x-2 gap-y-0.5 text-[10px] text-slate-400">
+                    <template v-if="bpr.blockedXactId">
+                      <span>Victim TXN</span>
+                      <button
+                        @click="filterByColumn('transaction_id', bpr.blockedXactId!)"
+                        class="text-indigo-400 hover:text-indigo-300 font-mono text-left cursor-pointer"
+                        :title="`Filter by transaction_id:${bpr.blockedXactId}`"
+                      >{{ bpr.blockedXactId }}</button>
+                    </template>
+                    <template v-if="bpr.blockingXactId">
+                      <span>Blocker TXN</span>
+                      <button
+                        @click="filterByColumn('transaction_id', bpr.blockingXactId!)"
+                        class="text-red-400 hover:text-red-300 font-mono text-left cursor-pointer"
+                        :title="`Filter by transaction_id:${bpr.blockingXactId}`"
+                      >{{ bpr.blockingXactId }}</button>
+                    </template>
                     <template v-if="bpr.blockedWaitResource">
                       <span>Wait resource</span>
-                      <span class="text-yellow-300 font-mono text-[10px]">
+                      <span class="text-yellow-300 font-mono break-all">
                         {{ state.selectedEvent?.extraFields['resolved_wait_resource'] || bpr.blockedWaitResource }}
                       </span>
                     </template>
@@ -821,13 +1015,10 @@ const waitCategoryBreakdown = computed(() => {
                   </div>
                 </div>
               </div>
-            </div>
+            </CollapsiblePanel>
 
             <!-- Blocker Events -->
-            <div v-if="analysis.blockerEvents.length > 0">
-              <h5 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
-                Blocker Session Events ({{ analysis.blockerEvents.length }})
-              </h5>
+            <CollapsiblePanel v-if="analysis.blockerEvents.length > 0" title="Blocked Session Events" icon="fa-hand" icon-color="text-red-400" :badge="analysis.blockerEvents.length" header-class="text-xs uppercase tracking-wider">
               <div class="space-y-0.5 max-h-40 overflow-auto">
                 <button
                   v-for="ev in analysis.blockerEvents.slice(0, 20)"
@@ -845,14 +1036,10 @@ const waitCategoryBreakdown = computed(() => {
                   <span v-if="ev.durationUs" class="text-slate-500 shrink-0 ml-auto">{{ formatDuration(ev.durationUs) }}</span>
                 </button>
               </div>
-            </div>
+            </CollapsiblePanel>
 
             <!-- Lock Escalations -->
-            <div v-if="analysis.lockEscalations.length > 0">
-              <h5 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
-                <i class="fa-solid fa-arrow-up text-amber-400 mr-1 text-[10px]"></i>
-                Lock Escalations ({{ analysis.lockEscalations.length }})
-              </h5>
+            <CollapsiblePanel v-if="analysis.lockEscalations.length > 0" title="Lock Escalations" icon="fa-arrow-up" icon-color="text-amber-400" :badge="analysis.lockEscalations.length" header-class="text-xs uppercase tracking-wider">
               <div class="space-y-0.5">
                 <button
                   v-for="ev in analysis.lockEscalations"
@@ -863,31 +1050,10 @@ const waitCategoryBreakdown = computed(() => {
                   S{{ ev.sessionId }} - {{ ev.objectName || 'unknown' }} ({{ ev.resourceType }})
                 </button>
               </div>
-            </div>
-
-            <!-- Diagnosis -->
-            <div v-if="analysis.diagnosis && analysis.diagnosis !== 'no_waits'">
-              <h5 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
-                <i :class="[
-                  'fa-solid mr-1 text-[10px]',
-                  analysis.diagnosis === 'deadlock' || analysis.diagnosis === 'likely_deadlock' ? 'fa-skull-crossbones text-red-400' :
-                  analysis.diagnosis === 'io_starvation' ? 'fa-hard-drive text-blue-400' :
-                  analysis.diagnosis.startsWith('lock') ? 'fa-lock text-red-400' :
-                  analysis.diagnosis === 'latch_contention' ? 'fa-bolt text-amber-400' :
-                  analysis.diagnosis === 'network_bottleneck' ? 'fa-network-wired text-purple-400' :
-                  analysis.diagnosis === 'memory_pressure' ? 'fa-memory text-pink-400' :
-                  analysis.diagnosis === 'cpu_pressure' ? 'fa-microchip text-cyan-400' :
-                  'fa-question-circle text-slate-400'
-                ]"></i>
-                Diagnosis: {{ diagnosisLabel(analysis.diagnosis) }}
-              </h5>
-            </div>
+            </CollapsiblePanel>
 
             <!-- Wait Stats (aggregated) -->
-            <div v-if="analysis.waitStats.length > 0">
-              <h5 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
-                Wait Statistics ({{ analysis.waitEvents.length }} events)
-              </h5>
+            <CollapsiblePanel v-if="analysis.waitStats.length > 0" title="Wait Statistics" icon="fa-clock" icon-color="text-slate-400" :badge="`${analysis.waitEvents.length} events`" header-class="text-xs uppercase tracking-wider">
               <div class="space-y-1">
                 <div
                   v-for="ws in analysis.waitStats"
@@ -925,14 +1091,10 @@ const waitCategoryBreakdown = computed(() => {
                   </span>
                 </div>
               </div>
-            </div>
+            </CollapsiblePanel>
 
             <!-- Recommendations -->
-            <div v-if="analysis.recommendations.length > 0">
-              <h5 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
-                <i class="fa-solid fa-lightbulb text-amber-400 mr-1 text-[10px]"></i>
-                Recommendations
-              </h5>
+            <CollapsiblePanel v-if="analysis.recommendations.length > 0" title="Recommendations" icon="fa-lightbulb" icon-color="text-amber-400" :badge="analysis.recommendations.length" header-class="text-xs uppercase tracking-wider">
               <ul class="space-y-1.5">
                 <li
                   v-for="(rec, i) in analysis.recommendations"
@@ -942,7 +1104,9 @@ const waitCategoryBreakdown = computed(() => {
                   {{ rec }}
                 </li>
               </ul>
-            </div>
+            </CollapsiblePanel>
+
+            </CollapsiblePanel>
           </div>
 
           <!-- Analysis Error -->
@@ -951,27 +1115,29 @@ const waitCategoryBreakdown = computed(() => {
           </div>
         </div>
 
-        <!-- Identity -->
-        <section>
-          <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Identity</h4>
-          <div class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+        <!-- Identity (only show if there's non-header info) -->
+        <CollapsiblePanel v-if="state.selectedEvent.username || state.selectedEvent.clientAppName || state.selectedEvent.objectName" title="Identity" icon="fa-id-card" icon-color="text-slate-400" header-class="text-xs uppercase tracking-wider" :collapsed="true">
+          <div class="grid grid-cols-[5rem_1fr] gap-x-3 gap-y-1 text-xs">
             <span class="text-slate-500">Event ID</span>
             <span class="text-slate-300">{{ state.selectedEvent.id }}</span>
-            <span class="text-slate-500">Session</span>
-            <span class="text-slate-300">{{ state.selectedEvent.sessionId ?? '-' }}</span>
-            <span class="text-slate-500">User</span>
-            <span class="text-slate-300 truncate">{{ state.selectedEvent.username ?? '-' }}</span>
-            <span class="text-slate-500">App</span>
-            <span class="text-slate-300 truncate">{{ state.selectedEvent.clientAppName ?? '-' }}</span>
-            <span class="text-slate-500">Database</span>
-            <span class="text-slate-300 truncate">{{ state.selectedEvent.databaseName ?? '-' }}</span>
+            <template v-if="state.selectedEvent.username">
+              <span class="text-slate-500">User</span>
+              <span class="text-slate-300 truncate">{{ state.selectedEvent.username }}</span>
+            </template>
+            <template v-if="state.selectedEvent.clientAppName">
+              <span class="text-slate-500">App</span>
+              <span class="text-slate-300 truncate">{{ state.selectedEvent.clientAppName }}</span>
+            </template>
+            <template v-if="state.selectedEvent.objectName">
+              <span class="text-slate-500">Object</span>
+              <span class="text-slate-300 font-mono truncate">{{ state.selectedEvent.objectName }}</span>
+            </template>
           </div>
-        </section>
+        </CollapsiblePanel>
 
         <!-- Performance -->
-        <section v-if="state.selectedEvent.durationUs !== null || state.selectedEvent.logicalReads !== null">
-          <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Performance</h4>
-          <div class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+        <CollapsiblePanel v-if="state.selectedEvent.durationUs !== null || state.selectedEvent.logicalReads !== null" title="Performance" icon="fa-gauge-high" icon-color="text-cyan-400" header-class="text-xs uppercase tracking-wider">
+          <div class="grid grid-cols-[5rem_1fr] gap-x-3 gap-y-1 text-xs">
             <span class="text-slate-500">Duration</span>
             <span class="text-slate-300 font-medium">{{ formatDuration(state.selectedEvent.durationUs) }}</span>
             <template v-if="state.selectedEvent.cpuTimeUs !== null">
@@ -1004,12 +1170,11 @@ const waitCategoryBreakdown = computed(() => {
               </span>
             </template>
           </div>
-        </section>
+        </CollapsiblePanel>
 
         <!-- Lock Info -->
-        <section v-if="state.selectedEvent.resourceType || state.selectedEvent.lockMode || state.selectedEvent.waitType || state.selectedEvent.extraFields['wait_resource']">
-          <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Lock / Wait</h4>
-          <div class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+        <CollapsiblePanel v-if="state.selectedEvent.resourceType || state.selectedEvent.lockMode || state.selectedEvent.waitType || state.selectedEvent.extraFields['wait_resource']" title="Lock / Wait" icon="fa-lock" icon-color="text-yellow-400" header-class="text-xs uppercase tracking-wider">
+          <div class="grid grid-cols-[5rem_1fr] gap-x-3 gap-y-1 text-xs">
             <template v-if="state.selectedEvent.waitType">
               <span class="text-slate-500">Wait Type</span>
               <span class="text-orange-300 font-medium">{{ state.selectedEvent.waitType }}</span>
@@ -1043,14 +1208,10 @@ const waitCategoryBreakdown = computed(() => {
               <span class="text-slate-300">{{ state.selectedEvent.waitDurationMs?.toLocaleString() }}ms</span>
             </template>
           </div>
-        </section>
+        </CollapsiblePanel>
 
         <!-- Related Objects (from same session/transaction) -->
-        <section v-if="txnObjectsLoading || txnObjects.length > 0">
-          <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
-            <i class="fa-solid fa-link text-emerald-400 mr-1"></i>Related Objects
-            <span class="text-slate-600 font-normal ml-1">(same session/transaction)</span>
-          </h4>
+        <CollapsiblePanel v-if="txnObjectsLoading || txnObjects.length > 0" title="Related Objects" icon="fa-link" icon-color="text-emerald-400" :badge="txnObjects.length || ''" header-class="text-xs uppercase tracking-wider">
           <div v-if="txnObjectsLoading" class="text-xs text-slate-500">
             <i class="fa-solid fa-spinner fa-spin mr-1"></i>Loading...
           </div>
@@ -1068,52 +1229,50 @@ const waitCategoryBreakdown = computed(() => {
               <span class="text-slate-500 ml-2 shrink-0">{{ obj.eventCount }} event{{ obj.eventCount !== 1 ? 's' : '' }}</span>
             </div>
           </div>
-        </section>
+        </CollapsiblePanel>
 
-        <!-- Object -->
-        <section v-if="state.selectedEvent.objectName">
-          <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Object</h4>
-          <p class="text-xs text-slate-300 font-mono bg-slate-700/50 px-2 py-1 rounded">
-            {{ state.selectedEvent.objectName }}
-          </p>
-        </section>
 
         <!-- SQL Text -->
-        <section v-if="state.selectedEvent.sqlText || state.selectedEvent.statement">
-          <div class="flex items-center justify-between mb-1.5">
-            <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wider">SQL Text</h4>
+        <CollapsiblePanel v-if="state.selectedEvent.sqlText || state.selectedEvent.statement" title="SQL Text" icon="fa-code" icon-color="text-slate-400" header-class="text-xs uppercase tracking-wider">
+          <template #header-right>
             <button
-              @click="copyText(state.selectedEvent!.statement || state.selectedEvent!.sqlText || '', 'sql')"
+              @click.stop="copyText(state.selectedEvent!.statement || state.selectedEvent!.sqlText || '', 'sql')"
               class="text-xs px-1.5 py-0.5 rounded text-slate-500 hover:text-slate-200 hover:bg-slate-700 transition-colors"
             >
               <i :class="copied === 'sql' ? 'fa-solid fa-check text-green-400' : 'fa-regular fa-copy'"></i>
             </button>
-          </div>
+          </template>
           <pre class="text-xs text-slate-300 font-mono bg-slate-900/50 px-3 py-2 rounded-lg overflow-auto max-h-48 whitespace-pre-wrap break-all">{{ state.selectedEvent.statement || state.selectedEvent.sqlText }}</pre>
-        </section>
+        </CollapsiblePanel>
 
         <!-- Deadlock Graph -->
-        <section v-if="state.selectedEvent.deadlockGraph">
-          <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
-            <i class="fa-solid fa-skull-crossbones text-red-400 mr-1"></i>Deadlock Graph
-          </h4>
+        <CollapsiblePanel v-if="state.selectedEvent.deadlockGraph" title="Deadlock Graph" icon="fa-skull-crossbones" icon-color="text-red-400" header-class="text-xs uppercase tracking-wider">
+          <template #header-right>
+            <button
+              @click.stop="copyText(state.selectedEvent!.deadlockGraph || '', 'deadlock')"
+              class="text-xs px-1.5 py-0.5 rounded text-slate-500 hover:text-slate-200 hover:bg-slate-700 transition-colors"
+            >
+              <i :class="copied === 'deadlock' ? 'fa-solid fa-check text-green-400' : 'fa-regular fa-copy'"></i>
+            </button>
+          </template>
           <pre class="text-xs text-slate-400 font-mono bg-slate-900/50 px-3 py-2 rounded-lg overflow-auto max-h-48 whitespace-pre-wrap break-all">{{ state.selectedEvent.deadlockGraph }}</pre>
-        </section>
+        </CollapsiblePanel>
 
         <!-- Blocked Process Report -->
-        <section v-if="state.selectedEvent.blockedProcessReport">
-          <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
-            <i class="fa-solid fa-ban text-orange-400 mr-1"></i>Blocked Process Report (raw)
-          </h4>
+        <CollapsiblePanel v-if="state.selectedEvent.blockedProcessReport" title="Blocked Process Report (raw)" icon="fa-ban" icon-color="text-orange-400" header-class="text-xs uppercase tracking-wider">
+          <template #header-right>
+            <button
+              @click.stop="copyText(state.selectedEvent!.blockedProcessReport || '', 'bpr')"
+              class="text-xs px-1.5 py-0.5 rounded text-slate-500 hover:text-slate-200 hover:bg-slate-700 transition-colors"
+            >
+              <i :class="copied === 'bpr' ? 'fa-solid fa-check text-green-400' : 'fa-regular fa-copy'"></i>
+            </button>
+          </template>
           <pre class="text-xs text-slate-400 font-mono bg-slate-900/50 px-3 py-2 rounded-lg overflow-auto max-h-48 whitespace-pre-wrap break-all">{{ state.selectedEvent.blockedProcessReport }}</pre>
-        </section>
+        </CollapsiblePanel>
 
         <!-- Extra Fields -->
-        <section v-if="Object.keys(state.selectedEvent.extraFields).length > 0">
-          <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
-            Additional Fields
-            <span class="text-slate-600 font-normal ml-1">({{ Object.keys(state.selectedEvent.extraFields).length }})</span>
-          </h4>
+        <CollapsiblePanel v-if="Object.keys(state.selectedEvent.extraFields).length > 0" title="Additional Fields" icon="fa-list-ul" icon-color="text-indigo-400" :badge="Object.keys(state.selectedEvent.extraFields).length" :collapsed="true" header-class="text-xs uppercase tracking-wider">
           <!-- Search -->
           <div class="relative mb-2">
             <i class="fa-solid fa-magnifying-glass absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs pointer-events-none"></i>
@@ -1152,15 +1311,12 @@ const waitCategoryBreakdown = computed(() => {
           <div v-else class="text-xs text-slate-500 text-center py-3">
             No properties match "{{ extraFieldsSearch }}"
           </div>
-        </section>
+        </CollapsiblePanel>
 
-        <!-- Source -->
-        <section>
-          <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Source</h4>
-          <p class="text-xs text-slate-500 truncate" :title="state.selectedEvent.sourceFile">
-            {{ state.selectedEvent.sourceFile.split(/[/\\]/).pop() }}
-          </p>
-        </section>
+        <!-- Source (inline) -->
+        <div class="text-[10px] text-slate-500 truncate pt-1" :title="state.selectedEvent.sourceFile">
+          <i class="fa-solid fa-file mr-1"></i>{{ state.selectedEvent.sourceFile.split(/[/\\]/).pop() }}
+        </div>
       </div>
     </template>
 

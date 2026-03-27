@@ -2,6 +2,7 @@
 import { computed } from 'vue';
 import { usePlanState } from '../composables/planState';
 import { flattenRelOps } from '../composables/sqlPlanParser';
+import CollapsiblePanel from './CollapsiblePanel.vue';
 import type { RelOp } from '../types/sqlplan';
 
 const props = withDefaults(defineProps<{ showHeader?: boolean }>(), { showHeader: true });
@@ -202,81 +203,80 @@ defineExpose({ issueCount: computed(() => issues.value.length) });
     <!-- Content -->
     <div v-else class="flex-1 overflow-y-auto p-4 space-y-4">
       <!-- Plan Stats -->
-      <div v-if="planStats" class="grid grid-cols-3 gap-2">
-        <div class="bg-slate-700/50 rounded-lg p-3 text-center">
-          <div class="text-2xl font-bold text-white">{{ planStats.totalNodes }}</div>
-          <div class="text-xs text-slate-400">Operators</div>
-        </div>
-        <div class="bg-slate-700/50 rounded-lg p-3 text-center">
-          <div class="text-2xl font-bold text-green-400">{{ planStats.seekNodes }}</div>
-          <div class="text-xs text-slate-400">Seeks</div>
-        </div>
-        <div class="bg-slate-700/50 rounded-lg p-3 text-center">
-          <div class="text-2xl font-bold" :class="planStats.scanNodes > 3 ? 'text-amber-400' : 'text-slate-300'">
-            {{ planStats.scanNodes }}
+      <CollapsiblePanel v-if="planStats" title="Plan Statistics" icon="fa-chart-pie" icon-color="text-cyan-400">
+        <div class="grid grid-cols-3 gap-2">
+          <div class="bg-slate-700/50 rounded-lg p-3 text-center">
+            <div class="text-2xl font-bold text-white">{{ planStats.totalNodes }}</div>
+            <div class="text-xs text-slate-400">Operators</div>
           </div>
-          <div class="text-xs text-slate-400">Scans</div>
+          <div class="bg-slate-700/50 rounded-lg p-3 text-center">
+            <div class="text-2xl font-bold text-green-400">{{ planStats.seekNodes }}</div>
+            <div class="text-xs text-slate-400">Seeks</div>
+          </div>
+          <div class="bg-slate-700/50 rounded-lg p-3 text-center">
+            <div class="text-2xl font-bold" :class="planStats.scanNodes > 3 ? 'text-amber-400' : 'text-slate-300'">
+              {{ planStats.scanNodes }}
+            </div>
+            <div class="text-xs text-slate-400">Scans</div>
+          </div>
         </div>
-      </div>
-      
-      <!-- Timing Info -->
-      <div v-if="planStats?.actualTime !== null && planStats?.actualTime !== undefined" class="bg-slate-700/50 rounded-lg p-3">
-        <div class="flex items-center justify-between">
-          <span class="text-sm text-slate-400">
-            <i class="fa-solid fa-stopwatch mr-1"></i>
-            Actual Execution Time
-          </span>
-          <span class="font-mono font-bold text-white">
-            {{ planStats?.actualTime }}ms
-          </span>
+
+        <!-- Timing Info -->
+        <div v-if="planStats?.actualTime !== null && planStats?.actualTime !== undefined" class="bg-slate-700/50 rounded-lg p-3 mt-2">
+          <div class="flex items-center justify-between">
+            <span class="text-sm text-slate-400">
+              <i class="fa-solid fa-stopwatch mr-1"></i>
+              Actual Execution Time
+            </span>
+            <span class="font-mono font-bold text-white">
+              {{ planStats?.actualTime }}ms
+            </span>
+          </div>
         </div>
-      </div>
+      </CollapsiblePanel>
       
       <!-- Issues List -->
-      <div v-if="issues.length > 0" class="space-y-2">
-        <h4 class="text-sm font-semibold text-slate-400 flex items-center gap-2">
-          <i class="fa-solid fa-list-check"></i>
-          Detected Issues
-        </h4>
-        
-        <div 
-          v-for="(issue, idx) in issues"
-          :key="idx"
-          class="border rounded-lg p-3"
-          :class="getSeverityBg(issue.severity)"
-        >
-          <div class="flex items-start gap-2">
-            <i 
-              :class="['fa-solid', getSeverityIcon(issue.severity), getSeverityColor(issue.severity)]"
-              class="mt-0.5"
-            ></i>
-            <div class="flex-1 min-w-0">
-              <div class="font-semibold text-sm text-slate-200">{{ issue.title }}</div>
-              <p class="text-xs text-slate-400 mt-1">{{ issue.description }}</p>
-              
-              <!-- Impact bar -->
-              <div class="mt-2">
-                <div class="flex justify-between text-xs mb-1">
-                  <span class="text-slate-500">Impact</span>
-                  <span :class="getSeverityColor(issue.severity)">{{ issue.impact.toFixed(0) }}%</span>
-                </div>
-                <div class="h-1 bg-slate-600 rounded-full overflow-hidden">
-                  <div 
-                    class="h-full rounded-full"
-                    :style="{ width: issue.impact + '%' }"
-                    :class="{
-                      'bg-red-500': issue.severity === 'critical',
-                      'bg-amber-500': issue.severity === 'warning',
-                      'bg-blue-500': issue.severity === 'info'
-                    }"
-                  ></div>
+      <CollapsiblePanel v-if="issues.length > 0" title="Detected Issues" icon="fa-list-check" icon-color="text-amber-400" :badge="issues.length">
+        <div class="space-y-2">
+          <div
+            v-for="(issue, idx) in issues"
+            :key="idx"
+            class="border rounded-lg p-3"
+            :class="getSeverityBg(issue.severity)"
+          >
+            <div class="flex items-start gap-2">
+              <i
+                :class="['fa-solid', getSeverityIcon(issue.severity), getSeverityColor(issue.severity)]"
+                class="mt-0.5"
+              ></i>
+              <div class="flex-1 min-w-0">
+                <div class="font-semibold text-sm text-slate-200">{{ issue.title }}</div>
+                <p class="text-xs text-slate-400 mt-1">{{ issue.description }}</p>
+
+                <!-- Impact bar -->
+                <div class="mt-2">
+                  <div class="flex justify-between text-xs mb-1">
+                    <span class="text-slate-500">Impact</span>
+                    <span :class="getSeverityColor(issue.severity)">{{ issue.impact.toFixed(0) }}%</span>
+                  </div>
+                  <div class="h-1 bg-slate-600 rounded-full overflow-hidden">
+                    <div
+                      class="h-full rounded-full"
+                      :style="{ width: issue.impact + '%' }"
+                      :class="{
+                        'bg-red-500': issue.severity === 'critical',
+                        'bg-amber-500': issue.severity === 'warning',
+                        'bg-blue-500': issue.severity === 'info'
+                      }"
+                    ></div>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
-      
+      </CollapsiblePanel>
+
       <!-- No Issues -->
       <div v-else class="bg-green-500/10 border border-green-500/30 rounded-lg p-4 text-center">
         <i class="fa-solid fa-circle-check text-3xl text-green-400 mb-2"></i>

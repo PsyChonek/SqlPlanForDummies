@@ -6,18 +6,72 @@ use tokio::sync::mpsc;
 
 use super::types::*;
 
-/// Determine which PowerShell executable to use (pwsh preferred over powershell)
+/// Windows flag to prevent a console window from flashing when spawning PowerShell.
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// User-provided PowerShell path (set via the UI when auto-detection fails).
+static CUSTOM_PS_PATH: std::sync::OnceLock<tokio::sync::Mutex<Option<String>>> =
+    std::sync::OnceLock::new();
+
+fn custom_ps_mutex() -> &'static tokio::sync::Mutex<Option<String>> {
+    CUSTOM_PS_PATH.get_or_init(|| tokio::sync::Mutex::new(None))
+}
+
+/// Store a user-provided PowerShell path.
+pub async fn set_custom_powershell_path(path: Option<String>) {
+    *custom_ps_mutex().lock().await = path;
+}
+
+/// Test whether a given path is a working PowerShell executable.
+pub async fn validate_powershell(path: &str) -> bool {
+    let mut command = tokio::process::Command::new(path);
+    command
+        .args(&["-NoProfile", "-NonInteractive", "-Command", "echo ok"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    command
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Determine which PowerShell executable to use (pwsh preferred over powershell).
+/// Checks user-provided path first, then bare names, then well-known full paths
+/// (needed when the Tauri GUI app doesn't inherit a full PATH).
 async fn find_powershell() -> Option<String> {
-    for cmd in &["pwsh", "powershell"] {
-        let ok = tokio::process::Command::new(cmd)
-            .args(&["-NoProfile", "-NonInteractive", "-Command", "echo ok"])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .await
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if ok {
+    // 1. Check user-provided custom path
+    if let Some(custom) = custom_ps_mutex().lock().await.clone() {
+        if validate_powershell(&custom).await {
+            return Some(custom);
+        }
+    }
+
+    // 2. Try bare names + well-known full paths
+    let mut candidates: Vec<String> = vec![
+        "pwsh".into(),
+        "powershell".into(),
+    ];
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(pf) = std::env::var("ProgramFiles") {
+            candidates.push(format!(r"{}\PowerShell\7\pwsh.exe", pf));
+        }
+        if let Ok(windir) = std::env::var("SystemRoot") {
+            candidates.push(format!(
+                r"{}\System32\WindowsPowerShell\v1.0\powershell.exe",
+                windir
+            ));
+        }
+    }
+
+    for cmd in &candidates {
+        if validate_powershell(cmd).await {
             return Some(cmd.to_string());
         }
     }
@@ -57,12 +111,13 @@ foreach ($pattern in $searchPaths) {
 $result | ConvertTo-Json -Compress
 "#;
 
-    let output = tokio::process::Command::new(&ps_exe)
-        .args(&["-NoProfile", "-NonInteractive", "-Command", check_script])
+    let mut cmd = tokio::process::Command::new(&ps_exe);
+    cmd.args(&["-NoProfile", "-NonInteractive", "-Command", check_script])
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .await;
+        .stderr(std::process::Stdio::piped());
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let output = cmd.output().await;
 
     let (sql_module, dbatools_module, has_dll, dll_path) = match output {
         Ok(o) if o.status.success() => {
@@ -244,10 +299,14 @@ foreach ($filePath in @({paths_joined})) {{
         phase: LoadPhase::Parsing,
     }).await;
 
-    let mut child = tokio::process::Command::new(&ps_exe)
+    let mut spawn_cmd = tokio::process::Command::new(&ps_exe);
+    spawn_cmd
         .args(&["-NoProfile", "-NonInteractive", "-Command", &script])
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(target_os = "windows")]
+    spawn_cmd.creation_flags(CREATE_NO_WINDOW);
+    let mut child = spawn_cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn PowerShell: {}", e))?;
 
@@ -553,75 +612,146 @@ pub async fn parse_xml_file(
     let mut current_event: Option<XelEventBuilder> = None;
     let mut current_data_name: Option<String> = None;
     let mut current_action_name: Option<String> = None;
-    let mut in_value = false;
+    // Which element we're reading content from
+    #[derive(PartialEq, Clone)]
+    enum ValueTag { None, Value, Text }
+    let mut value_tag = ValueTag::None;
+    // Track depth inside <value> to handle nested XML (e.g. blocked_process_report)
+    let mut value_depth: u32 = 0;
+    // Buffer for collecting nested XML inside <value>
+    let mut xml_buf = String::new();
+    // Whether <text> has been seen for the current data/action element — <text>
+    // carries the human-readable name for enum fields and takes precedence over <value>.
+    let mut text_seen = false;
+
+    /// Helper: reconstruct an opening XML tag with attributes into a string buffer
+    fn append_open_tag(buf: &mut String, tag: &str, e: &quick_xml::events::BytesStart, self_close: bool) {
+        buf.push('<');
+        buf.push_str(tag);
+        for attr in e.attributes().flatten() {
+            let k = String::from_utf8_lossy(attr.key.as_ref());
+            let v = String::from_utf8_lossy(&attr.value);
+            buf.push(' ');
+            buf.push_str(&k);
+            buf.push_str("=\"");
+            buf.push_str(&v);
+            buf.push('"');
+        }
+        if self_close { buf.push_str(" />"); } else { buf.push('>'); }
+    }
+
+    /// Helper: handle an opening/empty tag during XML parsing
+    fn handle_start_tag(
+        e: &quick_xml::events::BytesStart,
+        is_empty: bool,
+        current_event: &mut Option<XelEventBuilder>,
+        current_data_name: &mut Option<String>,
+        current_action_name: &mut Option<String>,
+        value_tag: &mut ValueTag,
+        value_depth: &mut u32,
+        xml_buf: &mut String,
+        text_seen: &mut bool,
+        file_path: &str,
+    ) {
+        let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+
+        // If inside nested XML in <value>, collect the raw XML
+        if *value_tag == ValueTag::Value && *value_depth > 1 {
+            append_open_tag(xml_buf, &tag_name, e, is_empty);
+            if !is_empty { *value_depth += 1; }
+            return;
+        }
+
+        match tag_name.as_str() {
+            "event" => {
+                let mut builder = XelEventBuilder::new(file_path.to_string());
+                for attr in e.attributes().flatten() {
+                    let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                    let val = String::from_utf8_lossy(&attr.value).to_string();
+                    match key.as_str() {
+                        "name" => builder.event_name = val,
+                        "timestamp" => builder.timestamp_str = Some(val),
+                        _ => {}
+                    }
+                }
+                *current_event = Some(builder);
+            }
+            "data" => {
+                if current_event.is_some() {
+                    *text_seen = false;
+                    for attr in e.attributes().flatten() {
+                        let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                        if key == "name" {
+                            *current_data_name = Some(
+                                String::from_utf8_lossy(&attr.value).to_string(),
+                            );
+                        }
+                    }
+                }
+            }
+            "action" => {
+                if current_event.is_some() {
+                    *text_seen = false;
+                    for attr in e.attributes().flatten() {
+                        let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                        if key == "name" {
+                            *current_action_name = Some(
+                                String::from_utf8_lossy(&attr.value).to_string(),
+                            );
+                        }
+                    }
+                }
+            }
+            "value" if !is_empty => {
+                *value_tag = ValueTag::Value;
+                *value_depth = 1;
+                xml_buf.clear();
+            }
+            "text" if !is_empty => {
+                *value_tag = ValueTag::Text;
+            }
+            _ => {
+                // Nested element inside <value> — start collecting XML
+                if *value_tag == ValueTag::Value {
+                    *value_depth += 1;
+                    append_open_tag(xml_buf, &tag_name, e, is_empty);
+                    if is_empty { *value_depth -= 1; }
+                }
+            }
+        }
+    }
 
     loop {
         match reader.read_event() {
-            Ok(XmlEvent::Start(ref e)) | Ok(XmlEvent::Empty(ref e)) => {
-                let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-
-                match tag_name.as_str() {
-                    "event" => {
-                        let mut builder = XelEventBuilder::new(file_path.to_string());
-                        for attr in e.attributes().flatten() {
-                            let key =
-                                String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                            let val =
-                                String::from_utf8_lossy(&attr.value).to_string();
-                            match key.as_str() {
-                                "name" => builder.event_name = val,
-                                "timestamp" => builder.timestamp_str = Some(val),
-                                _ => {}
-                            }
-                        }
-                        current_event = Some(builder);
-                    }
-                    "data" => {
-                        if current_event.is_some() {
-                            for attr in e.attributes().flatten() {
-                                let key =
-                                    String::from_utf8_lossy(attr.key.as_ref())
-                                        .to_string();
-                                if key == "name" {
-                                    current_data_name = Some(
-                                        String::from_utf8_lossy(&attr.value)
-                                            .to_string(),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    "action" => {
-                        if current_event.is_some() {
-                            for attr in e.attributes().flatten() {
-                                let key =
-                                    String::from_utf8_lossy(attr.key.as_ref())
-                                        .to_string();
-                                if key == "name" {
-                                    current_action_name = Some(
-                                        String::from_utf8_lossy(&attr.value)
-                                            .to_string(),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    "value" | "text" => {
-                        in_value = true;
-                    }
-                    _ => {}
-                }
+            Ok(XmlEvent::Start(ref e)) => {
+                handle_start_tag(e, false, &mut current_event, &mut current_data_name,
+                    &mut current_action_name, &mut value_tag, &mut value_depth,
+                    &mut xml_buf, &mut text_seen, file_path);
+            }
+            Ok(XmlEvent::Empty(ref e)) => {
+                handle_start_tag(e, true, &mut current_event, &mut current_data_name,
+                    &mut current_action_name, &mut value_tag, &mut value_depth,
+                    &mut xml_buf, &mut text_seen, file_path);
             }
             Ok(XmlEvent::Text(ref e)) => {
-                if in_value {
-                    if let Some(ref mut builder) = current_event {
-                        let text = e.unescape().unwrap_or_default().to_string();
+                if value_tag != ValueTag::None {
+                    let text = e.unescape().unwrap_or_default().to_string();
+                    if value_depth > 1 {
+                        // Inside nested XML — append text to buffer
+                        xml_buf.push_str(&text);
+                    } else if let Some(ref mut builder) = current_event {
                         let field_name = current_data_name
                             .as_deref()
                             .or(current_action_name.as_deref());
 
                         if let Some(name) = field_name {
-                            builder.set_field(name, &text);
+                            // <text> always wins; <value> only sets if <text> hasn't been seen
+                            if value_tag == ValueTag::Text {
+                                builder.set_field(name, &text);
+                                text_seen = true;
+                            } else if !text_seen {
+                                builder.set_field(name, &text);
+                            }
                         }
                     }
                 }
@@ -648,14 +778,42 @@ pub async fn parse_xml_file(
                     }
                     "data" => {
                         current_data_name = None;
+                        text_seen = false;
                     }
                     "action" => {
                         current_action_name = None;
+                        text_seen = false;
                     }
-                    "value" | "text" => {
-                        in_value = false;
+                    "value" => {
+                        // If we collected nested XML, set the whole buffer as the field value
+                        if !xml_buf.is_empty() {
+                            if let Some(ref mut builder) = current_event {
+                                let field_name = current_data_name
+                                    .as_deref()
+                                    .or(current_action_name.as_deref());
+                                if let Some(name) = field_name {
+                                    if !text_seen {
+                                        builder.set_field(name, &xml_buf);
+                                    }
+                                }
+                            }
+                            xml_buf.clear();
+                        }
+                        value_tag = ValueTag::None;
+                        value_depth = 0;
                     }
-                    _ => {}
+                    "text" => {
+                        value_tag = ValueTag::None;
+                    }
+                    _ => {
+                        // Closing tag for nested element inside <value>
+                        if value_depth > 1 {
+                            xml_buf.push_str("</");
+                            xml_buf.push_str(&tag_name);
+                            xml_buf.push('>');
+                            value_depth -= 1;
+                        }
+                    }
                 }
             }
             Ok(XmlEvent::Eof) => break,
