@@ -10,7 +10,7 @@ import {
 } from '../../types/xel';
 import type { BlockingAnalysis, ParsedDeadlockGraph, TransactionObject, XelEvent } from '../../types/xel';
 
-const { state, selectEvent, setFilter, clearFilter } = useXelState();
+const { state, selectEvent, setFilter, clearFilter, setActiveView } = useXelState();
 
 const spidForProcess = (dl: ParsedDeadlockGraph, processId: string): string => {
   const proc = dl.processes.find(p => p.id === processId);
@@ -334,6 +334,58 @@ const filterByColumn = (column: string, value: string) => {
   setFilter({ textSearch: `${column}:${filterValue}` });
 };
 
+const findDeadlockRpc = (dl: ParsedDeadlockGraph) => {
+  // 1. RPC filter: session + procedure + rpc_completed
+  const spids = [...new Set(dl.processes.map(p => p.spid).filter((s): s is number => s !== null))];
+  const procNames = [...new Set(
+    dl.processes.flatMap(p =>
+      p.executionStack
+        .map(f => f.procName)
+        .filter((n): n is string => n !== null)
+        .map(n => {
+          const dot = n.lastIndexOf('.');
+          return dot >= 0 ? n.slice(dot + 1) : n;
+        })
+    )
+  )];
+
+  const sessionParts = spids.map(s => `session_id:${s}`);
+  const procParts = procNames.map(n => `object_name:${n}`);
+
+  const rpcParts: string[] = [];
+  if (sessionParts.length > 1) {
+    rpcParts.push(`(${sessionParts.join(' || ')})`);
+  } else if (sessionParts.length === 1) {
+    rpcParts.push(sessionParts[0]);
+  }
+  if (procParts.length > 1) {
+    rpcParts.push(`(${procParts.join(' || ')})`);
+  } else if (procParts.length === 1) {
+    rpcParts.push(procParts[0]);
+  }
+  rpcParts.push('event_name:rpc_completed');
+  const rpcFilter = rpcParts.join(' ');
+
+  // 2. xactid from deadlock processes (matches lock events)
+  const xactParts = [...new Set(dl.processes.map(p => p.xactId).filter((x): x is string => x !== null))]
+    .map(x => `transaction_id:${x}`);
+
+  // 3. deadlock report event itself (by event ID AND event type)
+  const reportFilter = `(event_id:${dl.eventId} event_name:deadlock_report)`;
+
+  // Combine: (rpc filter) || xactids || deadlock report
+  // No time window — RPC calls may complete long before the deadlock report,
+  // and the text search (session + event_name + transaction_id) already scopes results
+  const orExtras = [...xactParts, reportFilter];
+  const search = `(${rpcFilter}) || ${orExtras.join(' || ')}`;
+
+  clearFilter();
+  setFilter({ textSearch: search });
+  setActiveView('table');
+};
+
+
+
 const roleColor = (role: string) => {
   switch (role) {
     case 'root_blocker': return 'text-red-400';
@@ -617,7 +669,7 @@ const waitCategoryBreakdown = computed(() => {
                           :class="proc.isVictim ? 'text-red-300/70 bg-red-950/40' : 'text-amber-300/70 bg-amber-950/30'"
                         >{{ proc.inputBuffer }}</pre>
                       </div>
-                      <div v-if="proc.spid || proc.xactId" class="mt-1 ml-5 flex flex-wrap gap-2">
+                      <div v-if="proc.spid || proc.xactId" class="mt-1 ml-5 flex flex-wrap gap-2 items-center">
                         <button v-if="proc.spid"
                           @click="filterBySession(proc.spid!)"
                           class="text-[10px] text-indigo-400 hover:text-indigo-300"
@@ -627,8 +679,9 @@ const waitCategoryBreakdown = computed(() => {
                         <button v-if="proc.xactId"
                           @click="filterByColumn('transaction_id', proc.xactId!)"
                           class="text-[10px] text-emerald-400 hover:text-emerald-300"
+                          title="Filter XE events by transaction_id (XE action) — matches lock events with this transaction"
                         >
-                          <i class="fa-solid fa-filter mr-0.5"></i>Transaction
+                          <i class="fa-solid fa-filter mr-0.5"></i>xactid {{ proc.xactId }}
                         </button>
                       </div>
                     </div>
@@ -664,12 +717,20 @@ const waitCategoryBreakdown = computed(() => {
                     </div>
                   </div>
 
-                  <button
-                    @click="jumpToEvent(dl.eventId)"
-                    class="text-[10px] text-indigo-400 hover:text-indigo-300"
-                  >
-                    View deadlock event #{{ dl.eventId }}
-                  </button>
+                  <div class="flex flex-wrap gap-3">
+                    <button
+                      @click="jumpToEvent(dl.eventId)"
+                      class="text-[10px] text-indigo-400 hover:text-indigo-300"
+                    >
+                      View deadlock event #{{ dl.eventId }}
+                    </button>
+                    <button
+                      @click="findDeadlockRpc(dl)"
+                      class="text-[10px] text-cyan-400 hover:text-cyan-300"
+                    >
+                      <i class="fa-solid fa-magnifying-glass mr-0.5"></i>Find RPC calls
+                    </button>
+                  </div>
                 </div>
               </div>
             </CollapsiblePanel>

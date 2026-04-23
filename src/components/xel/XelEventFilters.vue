@@ -17,12 +17,16 @@ watch(searchText, (val) => {
   }, 200);
 });
 
-// Sync back when textSearch is set programmatically (e.g. from event details)
+// Sync back when filters are set programmatically (e.g. from event details)
 watch(() => state.filter.textSearch, (val) => {
   if (!suppressSync) {
+    // Cancel any pending debounce to prevent it from overwriting the programmatic value
+    if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
     searchText.value = val ?? '';
   }
 });
+watch(() => state.filter.timeFrom, (val) => { timeFrom.value = val ?? ''; });
+watch(() => state.filter.timeTo, (val) => { timeTo.value = val ?? ''; });
 
 const clearSearch = () => {
   searchText.value = '';
@@ -207,7 +211,7 @@ const toggleEventType = (name: string) => {
       <input
         v-model="searchText"
         type="text"
-        placeholder="Search events..."
+        placeholder="Search... e.g. session_id:64 &quot;exact phrase&quot; || (event_name:rpc lock)"
         class="w-full pl-8 pr-8 py-1 bg-slate-700 border border-slate-600 rounded-lg text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
       />
       <button
@@ -294,15 +298,15 @@ const toggleEventType = (name: string) => {
       <button
         @click="openDatePicker('from')"
         class="px-2 py-1 text-xs rounded-lg border transition-colors flex items-center gap-1"
-        :class="timeFrom
+        :class="state.filter.timeFrom
           ? 'bg-indigo-900/30 border-indigo-600/50 text-indigo-300'
           : 'bg-slate-700 border-slate-600 text-slate-400 hover:text-slate-300'"
       >
         <i class="fa-solid fa-calendar text-[10px]"></i>
-        <span v-if="timeFrom">{{ formatDisplay(timeFrom) }}</span>
+        <span v-if="state.filter.timeFrom">{{ formatDisplay(timeFrom || state.filter.timeFrom) }}</span>
         <span v-else>From</span>
         <button
-          v-if="timeFrom"
+          v-if="state.filter.timeFrom"
           @click.stop="clearDateFilter('from')"
           class="ml-0.5 text-slate-500 hover:text-slate-200"
         >
@@ -316,15 +320,15 @@ const toggleEventType = (name: string) => {
       <button
         @click="openDatePicker('to')"
         class="px-2 py-1 text-xs rounded-lg border transition-colors flex items-center gap-1"
-        :class="timeTo
+        :class="state.filter.timeTo
           ? 'bg-indigo-900/30 border-indigo-600/50 text-indigo-300'
           : 'bg-slate-700 border-slate-600 text-slate-400 hover:text-slate-300'"
       >
         <i class="fa-solid fa-calendar-check text-[10px]"></i>
-        <span v-if="timeTo">{{ formatDisplay(timeTo) }}</span>
+        <span v-if="state.filter.timeTo">{{ formatDisplay(timeTo || state.filter.timeTo) }}</span>
         <span v-else>To</span>
         <button
-          v-if="timeTo"
+          v-if="state.filter.timeTo"
           @click.stop="clearDateFilter('to')"
           class="ml-0.5 text-slate-500 hover:text-slate-200"
         >

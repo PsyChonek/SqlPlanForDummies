@@ -2,8 +2,14 @@
 import { ref, watch, onMounted, onUnmounted, computed } from 'vue';
 import { useXelState } from '../../composables/useXelState';
 import * as xelApi from '../../composables/xelTauriApi';
+import { summarizeDeadlock, clearDeadlockSummaryCache } from '../../composables/deadlockSummary';
 import type { XelEvent } from '../../types/xel';
 import { getEventSeverity, getEventSeverityBg, formatDuration, formatNumber, formatTimestamp, getLockModeDescription } from '../../types/xel';
+
+const SYNTHETIC_COLUMNS: readonly string[] = ['victimObject', 'causedBy'];
+const isSyntheticColumn = (col: string): boolean => SYNTHETIC_COLUMNS.includes(col);
+const isDeadlockEvent = (name: string): boolean =>
+  name === 'xml_deadlock_report' || name === 'database_xml_deadlock_report';
 
 const { state, selectEvent } = useXelState();
 
@@ -17,11 +23,12 @@ const totalCount = ref(0);
 const loading = ref(false);
 
 const cache = ref<Map<number, XelEvent[]>>(new Map());
+const clientSortedEvents = ref<XelEvent[] | null>(null);
 const allColumns = ref<string[]>([]);
 
 // Sort state
 const sortBy = ref<string | null>('timestamp');
-const sortDesc = ref(false);
+const sortDesc = ref(true);
 
 // Column display config
 const COLUMN_WIDTHS: Record<string, string> = {
@@ -47,6 +54,8 @@ const COLUMN_WIDTHS: Record<string, string> = {
   clientAppName: '130px',
   databaseName: '120px',
   sourceFile: '140px',
+  victimObject: '200px',
+  causedBy: '140px',
 };
 
 
@@ -66,6 +75,8 @@ const SHORT_LABELS: Record<string, string> = {
   lockMode: 'Lock Mode',
   waitType: 'Wait Type',
   sourceFile: 'Source File',
+  victimObject: 'Victim Object',
+  causedBy: 'Caused By',
 };
 
 // Columns to show by default (hide verbose ones initially)
@@ -78,13 +89,22 @@ const HIDDEN_BY_DEFAULT = new Set([
 const visibleColumns = ref<Set<string>>(new Set());
 const showColumnPicker = ref(false);
 
+const withSynthetic = (cols: string[]): string[] => {
+  const merged = [...cols];
+  for (const c of SYNTHETIC_COLUMNS) {
+    if (!merged.includes(c)) merged.push(c);
+  }
+  return merged;
+};
+
 const initColumns = (cols: string[]) => {
-  allColumns.value = cols;
+  const merged = withSynthetic(cols);
+  allColumns.value = merged;
   if (visibleColumns.value.size === 0) {
-    visibleColumns.value = new Set(cols.filter(c => !HIDDEN_BY_DEFAULT.has(c)));
+    visibleColumns.value = new Set(merged.filter(c => !HIDDEN_BY_DEFAULT.has(c)));
   } else {
     // Add any new columns from newly loaded file (keep existing visibility)
-    for (const c of cols) {
+    for (const c of merged) {
       // new column not seen before — make visible
       if (!allColumns.value.includes(c)) {
         visibleColumns.value.add(c);
@@ -166,6 +186,9 @@ const visibleEnd = computed(() => {
 });
 
 const getEventAt = (globalIdx: number): XelEvent | null => {
+  if (clientSortedEvents.value) {
+    return clientSortedEvents.value[globalIdx] ?? null;
+  }
   const page = Math.floor(globalIdx / FETCH_SIZE);
   const pageEvents = cache.value.get(page);
   if (!pageEvents) return null;
@@ -187,6 +210,12 @@ const offsetStyle = computed(() => ({
 
 // Cell value extraction — works for both fixed and extra fields
 const getCellValue = (event: XelEvent, key: string): string => {
+  if (key === 'victimObject' || key === 'causedBy') {
+    if (!isDeadlockEvent(event.eventName)) return '';
+    const summary = summarizeDeadlock(event.id, event.deadlockGraph);
+    return key === 'victimObject' ? summary.victimObjects : summary.causedBy;
+  }
+
   // Check fixed fields first
   const fixedVal = getFixedField(event, key);
   if (fixedVal !== undefined) return formatValue(key, fixedVal);
@@ -238,6 +267,7 @@ const formatValue = (key: string, val: unknown): string => {
 
 // Data fetching
 const fetchPage = async (page: number) => {
+  if (clientSortedEvents.value) return;
   if (cache.value.has(page) || loading.value) return;
   loading.value = true;
   try {
@@ -258,10 +288,51 @@ const fetchPage = async (page: number) => {
 };
 
 const ensureVisible = async () => {
+  if (clientSortedEvents.value) return;
   const startPage = Math.floor(visibleStart.value / FETCH_SIZE);
   const endPage = Math.floor(Math.max(0, visibleEnd.value - 1) / FETCH_SIZE);
   for (let p = startPage; p <= endPage; p++) {
     await fetchPage(p);
+  }
+};
+
+const fetchAllForClientSort = async (key: string) => {
+  loading.value = true;
+  try {
+    // First probe to discover total count
+    const probe = await xelApi.queryEvents({
+      filter: { ...state.filter },
+      offset: 0,
+      limit: 1,
+      sortBy: 'timestamp',
+      sortDesc: false,
+    });
+    const total = probe.totalCount;
+    const full = total <= 1
+      ? probe
+      : await xelApi.queryEvents({
+          filter: { ...state.filter },
+          offset: 0,
+          limit: total,
+          sortBy: 'timestamp',
+          sortDesc: false,
+        });
+    const events = [...full.events];
+    // Pre-compute keys once so sort doesn't re-parse XML per comparison
+    const keyed = events.map(e => ({ e, k: getCellValue(e, key).toLowerCase() }));
+    keyed.sort((a, b) => {
+      // Empty values always last
+      if (a.k === '' && b.k !== '') return 1;
+      if (b.k === '' && a.k !== '') return -1;
+      const cmp = a.k.localeCompare(b.k);
+      return sortDesc.value ? -cmp : cmp;
+    });
+    clientSortedEvents.value = keyed.map(x => x.e);
+    totalCount.value = clientSortedEvents.value.length;
+  } catch (err) {
+    console.error('Client-side sort fetch failed:', err);
+  } finally {
+    loading.value = false;
   }
 };
 
@@ -273,6 +344,8 @@ const onScroll = () => {
 
 const resetAndFetch = async () => {
   cache.value = new Map();
+  clientSortedEvents.value = null;
+  clearDeadlockSummaryCache();
   totalCount.value = 0;
   if (containerRef.value) containerRef.value.scrollTop = 0;
   scrollTop.value = 0;
@@ -281,24 +354,30 @@ const resetAndFetch = async () => {
     const cols = await xelApi.getColumns();
     initColumns(cols);
   } catch {}
-  await fetchPage(0);
+  if (sortBy.value && isSyntheticColumn(sortBy.value)) {
+    await fetchAllForClientSort(sortBy.value);
+  } else {
+    await fetchPage(0);
+  }
 };
 
 const toggleSort = (key: string) => {
   if (justResized) return;
   if (sortBy.value === key) {
     sortDesc.value = !sortDesc.value;
-    if (!sortDesc.value && sortBy.value === key) {
-      // Second click was desc, third click clears
-    }
   } else {
     sortBy.value = key;
     sortDesc.value = false;
   }
   cache.value = new Map();
+  clientSortedEvents.value = null;
   if (containerRef.value) containerRef.value.scrollTop = 0;
   scrollTop.value = 0;
-  fetchPage(0);
+  if (isSyntheticColumn(key)) {
+    fetchAllForClientSort(key);
+  } else {
+    fetchPage(0);
+  }
 };
 
 watch(() => state.revision, resetAndFetch);
