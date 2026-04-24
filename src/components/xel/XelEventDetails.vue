@@ -442,17 +442,6 @@ const diagnosisIcon = (d: string): string => {
   return 'fa-question-circle';
 };
 
-const diagnosisIconColor = (d: string): string => {
-  if (d === 'deadlock' || d === 'likely_deadlock') return 'text-red-400';
-  if (d === 'io_starvation') return 'text-blue-400';
-  if (d.startsWith('lock')) return 'text-red-400';
-  if (d === 'latch_contention') return 'text-amber-400';
-  if (d === 'network_bottleneck') return 'text-purple-400';
-  if (d === 'memory_pressure') return 'text-pink-400';
-  if (d === 'cpu_pressure') return 'text-cyan-400';
-  return 'text-slate-400';
-};
-
 const categoryDotColor = (cat: string) => {
   const colors: Record<string, string> = {
     io: 'bg-blue-400',
