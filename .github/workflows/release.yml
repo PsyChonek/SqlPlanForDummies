@@ -194,4 +194,5 @@ jobs:
           identifier: PsyChonek.SqlPlanForDummies
           token: ${{ secrets.WINGET_TOKEN }}
           release-tag: v${{ needs.release.outputs.version }}
-          fork-user: PsyChonek  # Explicitly specify where the fork is located
+          fork-user: PsyChonek
+          installers-regex: '_(x64|arm64)_en-US\.msi$'
