@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue';
 import { usePlanState } from '../composables/planState';
 import { useQueryHistory, type PlanHistoryEntry } from '../composables/useQueryHistory';
+import { formatTime } from '../types/sqlplan';
 
 const { state, loadPlan, loadComparisonPlan, statements, selectStatement } = usePlanState();
 const { recentPlans, loadHistory } = useQueryHistory();
@@ -194,8 +195,11 @@ const setStatus = (message: string, error = false) => {
                 <i class="fa-solid fa-code mr-1"></i>
                 Statement {{ idx + 1 }}
               </span>
-              <span class="text-xs opacity-75">
-                Cost: {{ stmt.statementSubTreeCost.toFixed(4) }}
+              <span class="text-xs opacity-75 flex items-center gap-2">
+                <span>Cost: {{ stmt.statementSubTreeCost.toFixed(4) }}</span>
+                <span v-if="stmt.queryPlan.relOp.runtimeInfo?.actualElapsedMs != null">
+                  {{ formatTime(stmt.queryPlan.relOp.runtimeInfo.actualElapsedMs) }}
+                </span>
               </span>
             </div>
             <p class="text-xs mt-1 truncate opacity-75">

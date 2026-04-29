@@ -304,14 +304,15 @@ impl DbConnection {
                         }
                     })?;
 
-                // The plan XML is in the first result set, first row, first column
+                let mut plan_xmls: Vec<String> = Vec::new();
                 for result_set in &result_sets {
                     for row in result_set {
                         if let Some(xml) = row.try_get::<&str, _>(0).ok().flatten() {
-                            plan_xml = Some(xml.to_string());
+                            plan_xmls.push(xml.to_string());
                         }
                     }
                 }
+                plan_xml = merge_showplan_xmls(plan_xmls);
 
                 client
                     .simple_query("SET SHOWPLAN_XML OFF")
@@ -373,23 +374,23 @@ impl DbConnection {
                         }
                     })?;
 
+                let mut plan_xmls: Vec<String> = Vec::new();
                 for result_set in &result_sets {
                     if result_set.is_empty() {
                         continue;
                     }
 
-                    // Check each result set for the XML plan
                     let first_row = &result_set[0];
                     if let Some(xml) = first_row.try_get::<&str, _>(0).ok().flatten() {
                         if xml.contains("ShowPlanXML") {
-                            plan_xml = Some(xml.to_string());
+                            plan_xmls.push(xml.to_string());
                             continue;
                         }
                     }
 
-                    // Count rows affected but don't collect result data
                     rows_affected += result_set.len() as i64;
                 }
+                plan_xml = merge_showplan_xmls(plan_xmls);
 
                 client
                     .simple_query("SET STATISTICS XML OFF")
@@ -479,6 +480,33 @@ impl DbConnection {
             rows_affected,
         })
     }
+}
+
+fn merge_showplan_xmls(xmls: Vec<String>) -> Option<String> {
+    if xmls.is_empty() {
+        return None;
+    }
+    if xmls.len() == 1 {
+        return xmls.into_iter().next();
+    }
+
+    let mut iter = xmls.into_iter();
+    let mut base = iter.next().unwrap();
+
+    for xml in iter {
+        let open_tag = "<Statements>";
+        let close_tag = "</Statements>";
+        if let Some(open_end) = xml.find(open_tag).map(|i| i + open_tag.len()) {
+            if let Some(close_start) = xml.rfind(close_tag) {
+                let inner = xml[open_end..close_start].to_string();
+                if let Some(insert_pos) = base.rfind(close_tag) {
+                    base.insert_str(insert_pos, &inner);
+                }
+            }
+        }
+    }
+
+    Some(base)
 }
 
 fn extract_row_values(row: &Row) -> Vec<serde_json::Value> {

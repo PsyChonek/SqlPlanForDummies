@@ -5,32 +5,22 @@ import { EditorState } from '@codemirror/state';
 import { sql, MSSQL } from '@codemirror/lang-sql';
 import { oneDark } from '@codemirror/theme-one-dark';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
-import { useQueryExecution, type PlanType } from '../composables/useQueryExecution';
+import { useQueryExecution } from '../composables/useQueryExecution';
 import { useDbConnection } from '../composables/useDbConnection';
 import { useQueryHistory } from '../composables/useQueryHistory';
-
-interface EditorTab {
-  id: string;
-  title: string;
-  content: string;
-  view: EditorView | null;
-}
+import { useSqlEditorState } from '../composables/useSqlEditorState';
 
 const { state: execState, executeQuery } = useQueryExecution();
 const { state: dbState } = useDbConnection();
 const { addQueryEntry, addPlanEntry } = useQueryHistory();
+const { tabs, activeTabId, planType, getTab, setContent, addTab: addTabState, closeTab: closeTabState } = useSqlEditorState();
 
 const editorContainer = ref<HTMLDivElement | null>(null);
-const tabs = ref<EditorTab[]>([
-  { id: crypto.randomUUID(), title: 'Query 1', content: '', view: null },
-]);
-const activeTabId = ref(tabs.value[0].id);
-const planType = ref<PlanType>('Estimated');
-let tabCounter = 1;
+const views = new Map<string, EditorView>();
 
-const activeTab = () => tabs.value.find((t) => t.id === activeTabId.value);
+const activeTab = () => getTab(activeTabId.value);
 
-const createEditorView = (doc: string, container: HTMLElement): EditorView => {
+const createEditorView = (doc: string, container: HTMLElement, tabId: string): EditorView => {
   const executeKeymap = keymap.of([
     {
       key: 'Ctrl-e',
@@ -59,10 +49,7 @@ const createEditorView = (doc: string, container: HTMLElement): EditorView => {
       placeholder('Enter SQL query here...'),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
-          const tab = activeTab();
-          if (tab) {
-            tab.content = update.state.doc.toString();
-          }
+          setContent(tabId, update.state.doc.toString());
         }
       }),
       EditorView.theme({
@@ -81,63 +68,44 @@ const mountEditor = () => {
   const tab = activeTab();
   if (!tab) return;
 
-  // Destroy previous view
-  tabs.value.forEach((t) => {
-    if (t.view) {
-      t.view.destroy();
-      t.view = null;
-    }
-  });
+  views.forEach((v) => v.destroy());
+  views.clear();
+  editorContainer.value.replaceChildren();
 
-  editorContainer.value.innerHTML = '';
-  tab.view = createEditorView(tab.content, editorContainer.value);
+  const view = createEditorView(tab.content, editorContainer.value, tab.id);
+  views.set(tab.id, view);
 };
 
 const switchTab = (tabId: string) => {
-  const current = activeTab();
-  if (current?.view) {
-    current.content = current.view.state.doc.toString();
-    current.view.destroy();
-    current.view = null;
-  }
   activeTabId.value = tabId;
   nextTick(mountEditor);
 };
 
 const addTab = () => {
-  tabCounter++;
-  const newTab: EditorTab = {
-    id: crypto.randomUUID(),
-    title: `Query ${tabCounter}`,
-    content: '',
-    view: null,
-  };
-  tabs.value.push(newTab);
-  switchTab(newTab.id);
+  addTabState();
+  nextTick(mountEditor);
 };
 
 const closeTab = (tabId: string) => {
-  if (tabs.value.length <= 1) return;
-  const idx = tabs.value.findIndex((t) => t.id === tabId);
-  const tab = tabs.value[idx];
-  if (tab.view) {
-    tab.view.destroy();
-    tab.view = null;
+  const view = views.get(tabId);
+  if (view) {
+    view.destroy();
+    views.delete(tabId);
   }
-  tabs.value.splice(idx, 1);
-  if (activeTabId.value === tabId) {
-    switchTab(tabs.value[Math.min(idx, tabs.value.length - 1)].id);
-  }
+  closeTabState(tabId);
+  nextTick(mountEditor);
 };
 
 const getSelectedOrFullText = (): string => {
   const tab = activeTab();
-  if (!tab?.view) return '';
-  const selection = tab.view.state.selection.main;
+  if (!tab) return '';
+  const view = views.get(tab.id);
+  if (!view) return '';
+  const selection = view.state.selection.main;
   if (selection.from !== selection.to) {
-    return tab.view.state.sliceDoc(selection.from, selection.to);
+    return view.state.sliceDoc(selection.from, selection.to);
   }
-  return tab.view.state.doc.toString();
+  return view.state.doc.toString();
 };
 
 const handleExecute = async () => {
@@ -195,12 +163,8 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
-  tabs.value.forEach((t) => {
-    if (t.view) {
-      t.view.destroy();
-      t.view = null;
-    }
-  });
+  views.forEach((v) => v.destroy());
+  views.clear();
 });
 </script>
 

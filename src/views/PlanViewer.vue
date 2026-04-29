@@ -4,6 +4,7 @@ import ExecutionPlanGraph from '../components/ExecutionPlanGraph.vue';
 import NodeDetails from '../components/NodeDetails.vue';
 import PlanLoader from '../components/PlanLoader.vue';
 import AnalysisPanel from '../components/AnalysisPanel.vue';
+import SqlViewer from '../components/SqlViewer.vue';
 import PlanComparison from '../components/PlanComparison.vue';
 import { usePlanState } from '../composables/planState';
 import { useResizePanel } from '../composables/useResizePanel';
@@ -32,7 +33,7 @@ const right = useResizePanel({
   },
 });
 
-type MainTab = 'execution' | 'analysis';
+type MainTab = 'execution' | 'analysis' | 'query';
 const activeMainTab = ref<MainTab>('execution');
 const analysisPanelRef = ref<InstanceType<typeof AnalysisPanel> | null>(null);
 
@@ -108,6 +109,16 @@ const handleComparisonFile = async (event: Event) => {
               {{ analysisPanelRef.issueCount }}
             </span>
           </button>
+          <button
+            class="flex items-center gap-2 px-4 py-3 text-sm font-semibold transition-colors border-b-2"
+            :class="activeMainTab === 'query'
+              ? 'border-emerald-400 text-white'
+              : 'border-transparent text-slate-400 hover:text-slate-200'"
+            @click="activeMainTab = 'query'"
+          >
+            <i class="fa-solid fa-code text-emerald-400"></i>
+            Query
+          </button>
           <div class="ml-auto px-3">
             <input
               ref="comparisonFileInput"
@@ -145,6 +156,12 @@ const handleComparisonFile = async (event: Event) => {
           </div>
           <div v-show="activeMainTab === 'analysis'" class="absolute inset-0">
             <AnalysisPanel ref="analysisPanelRef" :show-header="false" />
+          </div>
+          <div v-show="activeMainTab === 'query'" class="absolute inset-0">
+            <SqlViewer v-if="state.selectedStatement" :text="state.selectedStatement.statementText" />
+            <div v-else class="flex items-center justify-center h-full text-slate-500 text-sm">
+              No statement selected
+            </div>
           </div>
         </div>
       </main>
