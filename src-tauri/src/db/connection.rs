@@ -35,10 +35,6 @@ impl DbConnection {
             || normalized.starts_with("select*from")
             || (sql_lower.contains("select") && sql_lower.contains("*") && sql_lower.contains("from"));
 
-        eprintln!("DEBUG: Original query: {}", sql);
-        eprintln!("DEBUG: Normalized: {}", normalized);
-        eprintln!("DEBUG: Pattern matched: {}", has_select_star_from);
-
         if has_select_star_from {
             // Extract table name (simple pattern matching)
             let after_from = if let Some(pos) = sql_lower.find("from") {
@@ -58,8 +54,6 @@ impl DbConnection {
                 return Ok(sql.to_string());
             }
 
-            eprintln!("DEBUG: Extracted table name: '{}'", table_name);
-
             // Query for columns with their actual system type
             // This resolves user-defined alias types to their base types
             // Check both tables and views using sys.objects
@@ -74,30 +68,6 @@ impl DbConnection {
                 ORDER BY c.column_id",
                 table_name.replace("'", "''")
             );
-
-            eprintln!("DEBUG: Metadata query: {}", metadata_query);
-
-            // Debug: List tables/views that match the pattern
-            let debug_query = format!(
-                "SELECT name, type_desc FROM sys.objects \
-                WHERE LOWER(name) LIKE LOWER('%{}%') AND type IN ('U', 'V')",
-                table_name.replace("'", "''")
-            );
-            if let Ok(stream) = client.simple_query(&debug_query).await {
-                if let Ok(results) = stream.into_results().await {
-                    eprintln!("DEBUG: Found {} matching objects:", results.iter().map(|r| r.len()).sum::<usize>());
-                    for result_set in &results {
-                        for row in result_set {
-                            if let (Some(name), Some(type_desc)) = (
-                                row.try_get::<&str, _>(0).ok().flatten(),
-                                row.try_get::<&str, _>(1).ok().flatten()
-                            ) {
-                                eprintln!("  - {} ({})", name, type_desc);
-                            }
-                        }
-                    }
-                }
-            }
 
             let stream = match client.simple_query(&metadata_query).await {
                 Ok(s) => s,
@@ -115,11 +85,6 @@ impl DbConnection {
                 }
             };
 
-            eprintln!("DEBUG: Got {} result sets from metadata query", result_sets.len());
-            for (i, rs) in result_sets.iter().enumerate() {
-                eprintln!("DEBUG: Result set {} has {} rows", i, rs.len());
-            }
-
             let mut columns: Vec<String> = Vec::new();
             let mut has_type_casting = false;
 
@@ -129,9 +94,6 @@ impl DbConnection {
                     let system_type_id_result = row.try_get::<u8, _>(1);
                     let user_type_id_result = row.try_get::<i32, _>(2);
                     let system_type_name_result = row.try_get::<&str, _>(4);
-
-                    eprintln!("DEBUG: Row - col_name: {:?}, system_type_id: {:?}, user_type_id: {:?}, system_type_name: {:?}",
-                        col_name_result, system_type_id_result, user_type_id_result, system_type_name_result);
 
                     if let Some(col_name) = col_name_result.ok().flatten() {
                         // Extract values once to avoid move issues
@@ -174,8 +136,6 @@ impl DbConnection {
                 }
             }
 
-            eprintln!("DEBUG: Found {} columns, {} require type casting", columns.len(), if has_type_casting { "some" } else { "none" });
-
             if has_type_casting && !columns.is_empty() {
                 // Rebuild the query with explicit column list
                 let column_list = columns.join(", ");
@@ -183,22 +143,16 @@ impl DbConnection {
                 // Get everything after "FROM table_name" (WHERE, ORDER BY, etc.)
                 let from_pos = match sql_lower.find("from") {
                     Some(pos) => pos,
-                    None => {
-                        eprintln!("DEBUG: Failed to find 'from' in query, returning original");
-                        return Ok(sql.to_string());
-                    }
+                    None => return Ok(sql.to_string()),
                 };
                 let after_from = &sql_trimmed[from_pos + 4..].trim_start();
                 let table_end_pos = after_from.find(table_name).map(|p| p + table_name.len()).unwrap_or(0);
                 let rest_of_query = &after_from[table_end_pos..];
 
-                let new_query = format!("SELECT {} FROM {}{}", column_list, table_name, rest_of_query);
-                eprintln!("DEBUG: Rewritten query: {}", new_query);
-                return Ok(new_query);
+                return Ok(format!("SELECT {} FROM {}{}", column_list, table_name, rest_of_query));
             }
         }
 
-        eprintln!("DEBUG: No date casting applied, returning original query");
         Ok(sql.to_string())
     }
 
