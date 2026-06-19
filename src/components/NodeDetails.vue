@@ -186,14 +186,26 @@ const predicates = computed(() => {
   if (node.operationDetails.indexScan?.seekPredicates) {
     for (const seek of node.operationDetails.indexScan.seekPredicates) {
       if (seek.prefix) {
-        const columns = seek.prefix.rangeColumns.map(c => c.column).join(', ');
-        const expressions = seek.prefix.rangeExpressions.join(', ');
-        results.push({
-          type: `Seek (${seek.prefix.scanType})`,
-          expression: `${columns} = ${expressions}`
-        });
+        const cols = seek.prefix.rangeColumns.map(c => c.column).join(', ');
+        const exprs = seek.prefix.rangeExpressions.join(', ');
+        results.push({ type: `Seek (${seek.prefix.scanType})`, expression: `${cols} = ${exprs}` });
+      }
+      if (seek.startRange) {
+        const cols = seek.startRange.rangeColumns.map(c => c.column).join(', ');
+        const exprs = seek.startRange.rangeExpressions.join(', ');
+        results.push({ type: `Seek Start (${seek.startRange.scanType})`, expression: `${cols} ${seek.startRange.scanType} ${exprs}` });
+      }
+      if (seek.endRange) {
+        const cols = seek.endRange.rangeColumns.map(c => c.column).join(', ');
+        const exprs = seek.endRange.rangeExpressions.join(', ');
+        results.push({ type: `Seek End (${seek.endRange.scanType})`, expression: `${cols} ${seek.endRange.scanType} ${exprs}` });
       }
     }
+  }
+
+  // Residual predicate on index seek/scan
+  if (node.operationDetails.indexScan?.predicate) {
+    results.push({ type: 'Residual', expression: node.operationDetails.indexScan.predicate });
   }
   
   // Nested loops outer references

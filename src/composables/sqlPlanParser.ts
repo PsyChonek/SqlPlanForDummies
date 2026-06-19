@@ -19,6 +19,7 @@ import type {
   MemoryGrantInfo,
   Parameter,
   SeekPredicate,
+  SeekRange,
   DefinedValue,
 } from '../types/sqlplan';
 
@@ -361,7 +362,9 @@ function parseIndexScan(indexScanEl: Element): IndexScanDetails {
   const objectEl = getChildElement(indexScanEl, 'Object');
   const seekPredicatesEl = getChildElement(indexScanEl, 'SeekPredicates');
   const definedValuesEl = getChildElement(indexScanEl, 'DefinedValues');
-  
+  const predicateEl = getChildElement(indexScanEl, 'Predicate');
+  const predicateScalarEl = predicateEl ? getChildElement(predicateEl, 'ScalarOperator') : null;
+
   return {
     ordered: indexScanEl.getAttribute('Ordered') === 'true',
     scanDirection: (indexScanEl.getAttribute('ScanDirection') as 'FORWARD' | 'BACKWARD') || undefined,
@@ -372,6 +375,7 @@ function parseIndexScan(indexScanEl: Element): IndexScanDetails {
     storage: (indexScanEl.getAttribute('Storage') as 'RowStore' | 'ColumnStore') || 'RowStore',
     object: objectEl ? parseObjectReference(objectEl) : { table: '' },
     seekPredicates: seekPredicatesEl ? parseSeekPredicates(seekPredicatesEl) : undefined,
+    predicate: predicateScalarEl?.getAttribute('ScalarString') || undefined,
     definedValues: definedValuesEl ? parseDefinedValues(definedValuesEl) : undefined,
   };
 }
@@ -391,36 +395,47 @@ function parseObjectReference(objectEl: Element): ObjectReference {
   };
 }
 
+function parseSeekRange(el: Element): SeekRange {
+  const rangeColumnsEl = getChildElement(el, 'RangeColumns');
+  const rangeExpressionsEl = getChildElement(el, 'RangeExpressions');
+  return {
+    scanType: el.getAttribute('ScanType') || '',
+    rangeColumns: rangeColumnsEl ?
+      getChildElements(rangeColumnsEl, 'ColumnReference').map(parseColumnReference) : [],
+    rangeExpressions: rangeExpressionsEl ?
+      getChildElements(rangeExpressionsEl, 'ScalarOperator').map(
+        e => e.getAttribute('ScalarString') || ''
+      ) : [],
+  };
+}
+
 /**
- * Parse SeekPredicates
+ * Parse SeekPredicates — handles Prefix, StartRange, and EndRange seek keys
  */
 function parseSeekPredicates(seekPredicatesEl: Element): SeekPredicate[] {
   const predicates: SeekPredicate[] = [];
   const seekPredNewEls = getChildElements(seekPredicatesEl, 'SeekPredicateNew');
-  
+
   for (const spEl of seekPredNewEls) {
     const seekKeysEl = getChildElement(spEl, 'SeekKeys');
     if (seekKeysEl) {
+      const pred: SeekPredicate = {};
+
       const prefixEl = getChildElement(seekKeysEl, 'Prefix');
-      if (prefixEl) {
-        const rangeColumnsEl = getChildElement(prefixEl, 'RangeColumns');
-        const rangeExpressionsEl = getChildElement(prefixEl, 'RangeExpressions');
-        
-        predicates.push({
-          prefix: {
-            scanType: prefixEl.getAttribute('ScanType') || '',
-            rangeColumns: rangeColumnsEl ? 
-              getChildElements(rangeColumnsEl, 'ColumnReference').map(parseColumnReference) : [],
-            rangeExpressions: rangeExpressionsEl ?
-              getChildElements(rangeExpressionsEl, 'ScalarOperator').map(
-                el => el.getAttribute('ScalarString') || ''
-              ) : [],
-          },
-        });
+      if (prefixEl) pred.prefix = parseSeekRange(prefixEl);
+
+      const startRangeEl = getChildElement(seekKeysEl, 'StartRange');
+      if (startRangeEl) pred.startRange = parseSeekRange(startRangeEl);
+
+      const endRangeEl = getChildElement(seekKeysEl, 'EndRange');
+      if (endRangeEl) pred.endRange = parseSeekRange(endRangeEl);
+
+      if (pred.prefix || pred.startRange || pred.endRange) {
+        predicates.push(pred);
       }
     }
   }
-  
+
   return predicates;
 }
 

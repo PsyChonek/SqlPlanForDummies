@@ -11,6 +11,7 @@ export interface SelectedEdge {
 // Application state
 interface AppState {
   plan: ShowPlanXML | null;
+  rawXml: string | null;
   selectedStatement: Statement | null;
   selectedNode: RelOp | null;
   selectedEdge: SelectedEdge | null;
@@ -25,6 +26,7 @@ interface AppState {
 
 const state = reactive<AppState>({
   plan: null,
+  rawXml: null,
   selectedStatement: null,
   selectedNode: null,
   selectedEdge: null,
@@ -45,6 +47,7 @@ export const usePlanState = () => {
     try {
       const plan = parseSqlPlan(xmlString);
       state.plan = plan;
+      state.rawXml = xmlString;
       
       // Auto-select the first statement if available
       if (plan.batches.length > 0 && plan.batches[0].statements.length > 0) {
@@ -87,6 +90,7 @@ export const usePlanState = () => {
   // Clear the current plan
   const clearPlan = () => {
     state.plan = null;
+    state.rawXml = null;
     state.selectedStatement = null;
     state.selectedNode = null;
     state.error = null;

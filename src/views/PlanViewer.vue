@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import ExecutionPlanGraph from '../components/ExecutionPlanGraph.vue';
 import NodeDetails from '../components/NodeDetails.vue';
 import PlanLoader from '../components/PlanLoader.vue';
@@ -33,8 +33,35 @@ const right = useResizePanel({
   },
 });
 
-type MainTab = 'execution' | 'analysis' | 'query';
+type MainTab = 'execution' | 'analysis' | 'query' | 'xml';
 const activeMainTab = ref<MainTab>('execution');
+
+function prettyPrintXml(xml: string): string {
+  let result = '';
+  let depth = 0;
+  const parts = xml.replace(/>\s*</g, '>\n<').split('\n');
+  for (const part of parts) {
+    const stripped = part.trim();
+    if (!stripped) continue;
+    const isClosing = /^<\//.test(stripped);
+    const isSelfClosing = /\/>$/.test(stripped) || /^<!/.test(stripped) || /^<\?/.test(stripped);
+    if (isClosing) depth--;
+    result += '  '.repeat(Math.max(0, depth)) + stripped + '\n';
+    if (!isClosing && !isSelfClosing) depth++;
+  }
+  return result.trimEnd();
+}
+
+const selectedStatementXml = computed(() => {
+  if (!state.rawXml || !state.selectedStatement) return '';
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(state.rawXml, 'text/xml');
+  const stmtId = state.selectedStatement.statementId;
+  const stmtEl = doc.querySelector(`StmtSimple[StatementId="${stmtId}"]`);
+  if (!stmtEl) return prettyPrintXml(state.rawXml);
+  const serializer = new XMLSerializer();
+  return prettyPrintXml(serializer.serializeToString(stmtEl));
+});
 const analysisPanelRef = ref<InstanceType<typeof AnalysisPanel> | null>(null);
 
 const comparisonFileInput = ref<HTMLInputElement | null>(null);
@@ -119,6 +146,16 @@ const handleComparisonFile = async (event: Event) => {
             <i class="fa-solid fa-code text-emerald-400"></i>
             Query
           </button>
+          <button
+            class="flex items-center gap-2 px-4 py-3 text-sm font-semibold transition-colors border-b-2"
+            :class="activeMainTab === 'xml'
+              ? 'border-amber-400 text-white'
+              : 'border-transparent text-slate-400 hover:text-slate-200'"
+            @click="activeMainTab = 'xml'"
+          >
+            <i class="fa-solid fa-file-code text-amber-400"></i>
+            XML
+          </button>
           <div class="ml-auto px-3">
             <input
               ref="comparisonFileInput"
@@ -159,6 +196,12 @@ const handleComparisonFile = async (event: Event) => {
           </div>
           <div v-show="activeMainTab === 'query'" class="absolute inset-0">
             <SqlViewer v-if="state.selectedStatement" :text="state.selectedStatement.statementText" />
+            <div v-else class="flex items-center justify-center h-full text-slate-500 text-sm">
+              No statement selected
+            </div>
+          </div>
+          <div v-show="activeMainTab === 'xml'" class="absolute inset-0 overflow-auto">
+            <pre v-if="selectedStatementXml" class="p-4 text-xs font-mono text-slate-300 leading-relaxed whitespace-pre">{{ selectedStatementXml }}</pre>
             <div v-else class="flex items-center justify-center h-full text-slate-500 text-sm">
               No statement selected
             </div>

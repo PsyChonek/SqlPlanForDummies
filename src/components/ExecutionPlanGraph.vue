@@ -268,7 +268,11 @@ const renderGraph = () => {
   // Compute max rows across all edges for thickness normalization
   const getEdgeRows = (target: d3.HierarchyPointNode<TreeNode>): number => {
     const op = target.data.relOp;
-    return op.runtimeInfo?.actualRows ?? op.estimateRows;
+    if (op.runtimeInfo) {
+      const { actualRows, actualRowsRead } = op.runtimeInfo;
+      return Math.max(actualRows, actualRowsRead ?? 0);
+    }
+    return op.estimateRows;
   };
   const maxRows = Math.max(1, ...links.map(l => getEdgeRows(l.target)));
 

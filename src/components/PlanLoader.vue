@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { usePlanState } from '../composables/planState';
 import { useQueryHistory, type PlanHistoryEntry } from '../composables/useQueryHistory';
 import { formatTime } from '../types/sqlplan';
@@ -34,6 +34,27 @@ const fileInput = ref<HTMLInputElement>();
 const dragActive = ref(false);
 const statusMessage = ref<string>('');
 const isError = ref(false);
+
+type StatementSort = 'default' | 'name' | 'cost' | 'duration';
+const statementSort = ref<StatementSort>('default');
+
+const sortedStatements = computed(() => {
+  const indexed = statements.value.map((stmt, i) => ({ stmt, originalIdx: i }));
+  switch (statementSort.value) {
+    case 'name':
+      return [...indexed].sort((a, b) => a.stmt.statementText.localeCompare(b.stmt.statementText));
+    case 'cost':
+      return [...indexed].sort((a, b) => b.stmt.statementSubTreeCost - a.stmt.statementSubTreeCost);
+    case 'duration':
+      return [...indexed].sort((a, b) => {
+        const aMs = a.stmt.queryPlan.relOp.runtimeInfo?.actualElapsedMs ?? -1;
+        const bMs = b.stmt.queryPlan.relOp.runtimeInfo?.actualElapsedMs ?? -1;
+        return bMs - aMs;
+      });
+    default:
+      return indexed;
+  }
+});
 
 const openFileSelector = () => {
   fileInput.value?.click();
@@ -175,25 +196,33 @@ const setStatus = (message: string, error = false) => {
       
       <!-- Statement List -->
       <div v-if="statements.length > 0" class="mt-6">
-        <h4 class="text-sm font-semibold text-slate-400 mb-2 flex items-center gap-2">
-          <i class="fa-solid fa-list-ol"></i>
-          Statements ({{ statements.length }})
-        </h4>
-        
+        <div class="flex items-center justify-between mb-2">
+          <h4 class="text-sm font-semibold text-slate-400 flex items-center gap-2">
+            <i class="fa-solid fa-list-ol"></i>
+            Statements ({{ statements.length }})
+          </h4>
+          <select v-model="statementSort" class="text-xs bg-slate-700 text-slate-300 border border-slate-600 rounded px-1.5 py-0.5 cursor-pointer">
+            <option value="default">Default</option>
+            <option value="name">Name</option>
+            <option value="cost">Cost</option>
+            <option value="duration">Duration</option>
+          </select>
+        </div>
+
         <div class="space-y-2">
           <button
-            v-for="(stmt, idx) in statements"
+            v-for="{ stmt, originalIdx } in sortedStatements"
             :key="stmt.statementId"
             class="w-full text-left px-3 py-2 rounded-lg transition-colors"
-            :class="state.selectedStatement?.statementId === stmt.statementId 
-              ? 'bg-blue-600 text-white' 
+            :class="state.selectedStatement?.statementId === stmt.statementId
+              ? 'bg-blue-600 text-white'
               : 'bg-slate-700 hover:bg-slate-600 text-slate-300'"
             @click="selectStatement(stmt)"
           >
             <div class="flex items-center justify-between">
               <span class="font-medium text-sm">
                 <i class="fa-solid fa-code mr-1"></i>
-                Statement {{ idx + 1 }}
+                Statement {{ originalIdx + 1 }}
               </span>
               <span class="text-xs opacity-75 flex items-center gap-2">
                 <span>Cost: {{ stmt.statementSubTreeCost.toFixed(4) }}</span>

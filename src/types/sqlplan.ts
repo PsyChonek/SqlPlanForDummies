@@ -181,12 +181,16 @@ export interface ObjectReference {
   alias?: string;
 }
 
+export interface SeekRange {
+  scanType: string;
+  rangeColumns: ColumnReference[];
+  rangeExpressions: string[];
+}
+
 export interface SeekPredicate {
-  prefix?: {
-    scanType: string;
-    rangeColumns: ColumnReference[];
-    rangeExpressions: string[];
-  };
+  prefix?: SeekRange;
+  startRange?: SeekRange;
+  endRange?: SeekRange;
 }
 
 export interface DefinedValue {
