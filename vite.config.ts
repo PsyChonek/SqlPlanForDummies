@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
@@ -9,9 +10,15 @@ const host = process.env.TAURI_DEV_HOST;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf-8"));
+
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [vue(), tailwindcss()],
+
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
 
   // Ensure .env files are loaded from the project root (absolute path for Tauri compatibility)
   envDir: __dirname,

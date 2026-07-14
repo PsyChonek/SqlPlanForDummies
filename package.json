@@ -1,11 +1,14 @@
 {
   "name": "sql-plan-for-dummies",
   "private": true,
-  "version": "2.5.0",
+  "version": "2.5.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
+    "build:patch": "node scripts/bump-version.mjs patch && npm run tauri build",
+    "build:minor": "node scripts/bump-version.mjs minor && npm run tauri build",
+    "build:major": "node scripts/bump-version.mjs major && npm run tauri build",
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest",

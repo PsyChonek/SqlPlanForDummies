@@ -7,6 +7,7 @@ import ConnectionManager from './components/ConnectionManager.vue';
 const { state: dbState } = useDbConnection();
 const showConnectionDialog = ref(false);
 const isWindows = ref(false);
+const appVersion = __APP_VERSION__;
 
 onMounted(async () => {
   try {
@@ -23,9 +24,12 @@ onMounted(async () => {
   <div class="w-screen h-screen flex flex-col bg-slate-900 overflow-hidden">
     <!-- Header -->
     <header class="flex items-center justify-between px-4 py-1.5 bg-gradient-to-r from-indigo-900 to-purple-900 border-b border-indigo-500">
-      <h1 class="text-sm font-bold text-white tracking-tight">
+      <h1 class="flex items-center text-sm font-bold text-white tracking-tight">
         <i class="fa-solid fa-diagram-project mr-1.5 text-indigo-400"></i>
         SQL Plan For Dummies
+        <span class="ml-2 px-1.5 py-0.5 rounded bg-indigo-500/20 border border-indigo-500/40 text-[10px] font-medium text-indigo-300">
+          v{{ appVersion }}
+        </span>
       </h1>
       <div class="flex items-center gap-3">
         <!-- Connection Status (clickable) -->
