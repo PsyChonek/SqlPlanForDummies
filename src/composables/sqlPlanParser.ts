@@ -17,10 +17,14 @@ import type {
   ObjectReference,
   NestedLoopsDetails,
   MemoryGrantInfo,
+  QueryTimeStats,
   Parameter,
   SeekPredicate,
   SeekRange,
   DefinedValue,
+  PlanWarnings,
+  SpillWarning,
+  MissingIndex,
 } from '../types/sqlplan';
 
 /**
@@ -105,7 +109,11 @@ function parseQueryPlan(planEl: Element): QueryPlan {
   const relOpEl = getChildElement(planEl, 'RelOp');
   const memoryGrantEl = getChildElement(planEl, 'MemoryGrantInfo');
   const paramListEl = getChildElement(planEl, 'ParameterList');
-  
+  const waitStatsEl = getChildElement(planEl, 'WaitStats');
+  const queryTimeStatsEl = getChildElement(planEl, 'QueryTimeStats');
+  const warningsEl = getChildElement(planEl, 'Warnings');
+  const missingIndexesEl = getChildElement(planEl, 'MissingIndexes');
+
   return {
     degreeOfParallelism: parseInt(planEl.getAttribute('DegreeOfParallelism') || '1', 10),
     cachedPlanSize: parseInt(planEl.getAttribute('CachedPlanSize') || '0', 10),
@@ -115,6 +123,104 @@ function parseQueryPlan(planEl: Element): QueryPlan {
     memoryGrant: memoryGrantEl ? parseMemoryGrant(memoryGrantEl) : undefined,
     relOp: relOpEl ? parseRelOp(relOpEl) : createEmptyRelOp(),
     parameters: paramListEl ? parseParameters(paramListEl) : undefined,
+    waitStats: waitStatsEl ? parseWaitStats(waitStatsEl) : undefined,
+    queryTimeStats: queryTimeStatsEl ? parseQueryTimeStats(queryTimeStatsEl) : undefined,
+    warnings: warningsEl ? parseWarnings(warningsEl) : undefined,
+    missingIndexes: missingIndexesEl ? parseMissingIndexes(missingIndexesEl) : undefined,
+  };
+}
+
+/**
+ * Parse a Warnings element (appears on QueryPlan or on individual RelOps)
+ */
+function parseWarnings(warningsEl: Element): PlanWarnings {
+  const spills: SpillWarning[] = [];
+
+  for (const spillEl of getChildElements(warningsEl, 'SpillToTempDb')) {
+    spills.push({
+      kind: 'SpillToTempDb',
+      spillLevel: parseInt(spillEl.getAttribute('SpillLevel') || '0', 10) || undefined,
+      spilledThreadCount: parseInt(spillEl.getAttribute('SpilledThreadCount') || '0', 10) || undefined,
+    });
+  }
+  for (const kind of ['Sort', 'Hash'] as const) {
+    for (const spillEl of getChildElements(warningsEl, `${kind}SpillDetails`)) {
+      spills.push({
+        kind,
+        writesToTempDb: parseInt(spillEl.getAttribute('WritesToTempDb') || '0', 10) || undefined,
+        readsFromTempDb: parseInt(spillEl.getAttribute('ReadsFromTempDb') || '0', 10) || undefined,
+      });
+    }
+  }
+
+  const converts = getChildElements(warningsEl, 'PlanAffectingConvert').map(el => ({
+    convertIssue: el.getAttribute('ConvertIssue') || '',
+    expression: el.getAttribute('Expression') || '',
+  }));
+
+  const noStatsEl = getChildElement(warningsEl, 'ColumnsWithNoStatistics');
+  const columnsWithNoStatistics = noStatsEl
+    ? getChildElements(noStatsEl, 'ColumnReference').map(parseColumnReference)
+    : [];
+
+  const memoryGrantWarnings = getChildElements(warningsEl, 'MemoryGrantWarning').map(el => ({
+    kind: el.getAttribute('GrantWarningKind') || '',
+    requestedMemoryKb: parseInt(el.getAttribute('RequestedMemory') || '0', 10) || undefined,
+    grantedMemoryKb: parseInt(el.getAttribute('GrantedMemory') || '0', 10) || undefined,
+    usedMemoryKb: parseInt(el.getAttribute('MaxUsedMemory') || '0', 10) || undefined,
+  }));
+
+  return {
+    noJoinPredicate: warningsEl.getAttribute('NoJoinPredicate') === 'true' || undefined,
+    unmatchedIndexes: warningsEl.getAttribute('UnmatchedIndexes') === 'true' || undefined,
+    spills: spills.length > 0 ? spills : undefined,
+    planAffectingConverts: converts.length > 0 ? converts : undefined,
+    columnsWithNoStatistics: columnsWithNoStatistics.length > 0 ? columnsWithNoStatistics : undefined,
+    memoryGrantWarnings: memoryGrantWarnings.length > 0 ? memoryGrantWarnings : undefined,
+  };
+}
+
+/**
+ * Parse a MissingIndexes element
+ */
+function parseMissingIndexes(missingIndexesEl: Element): MissingIndex[] {
+  const results: MissingIndex[] = [];
+
+  for (const groupEl of getChildElements(missingIndexesEl, 'MissingIndexGroup')) {
+    const impact = parseFloat(groupEl.getAttribute('Impact') || '0');
+
+    for (const indexEl of getChildElements(groupEl, 'MissingIndex')) {
+      const columnsByUsage: Record<string, string[]> = {};
+      for (const colGroupEl of getChildElements(indexEl, 'ColumnGroup')) {
+        const usage = colGroupEl.getAttribute('Usage') || '';
+        columnsByUsage[usage] = getChildElements(colGroupEl, 'Column')
+          .map(col => (col.getAttribute('Name') || '').replace(/[\[\]]/g, ''));
+      }
+
+      results.push({
+        impact,
+        database: indexEl.getAttribute('Database')?.replace(/[\[\]]/g, '') || undefined,
+        schema: indexEl.getAttribute('Schema')?.replace(/[\[\]]/g, '') || undefined,
+        table: indexEl.getAttribute('Table')?.replace(/[\[\]]/g, '') || '',
+        equalityColumns: columnsByUsage['EQUALITY'] || [],
+        inequalityColumns: columnsByUsage['INEQUALITY'] || [],
+        includeColumns: columnsByUsage['INCLUDE'] || [],
+      });
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Parse QueryTimeStats element (statement-level CPU/elapsed time in ms)
+ */
+function parseQueryTimeStats(el: Element): QueryTimeStats {
+  return {
+    cpuTimeMs: parseFloat(el.getAttribute('CpuTime') || '0'),
+    elapsedTimeMs: parseFloat(el.getAttribute('ElapsedTime') || '0'),
+    udfCpuTimeMs: parseFloat(el.getAttribute('UdfCpuTime') || '0') || undefined,
+    udfElapsedTimeMs: parseFloat(el.getAttribute('UdfElapsedTime') || '0') || undefined,
   };
 }
 
@@ -155,6 +261,7 @@ function parseParameters(paramListEl: Element): Parameter[] {
 function parseRelOp(relOpEl: Element): RelOp {
   const physicalOp = relOpEl.getAttribute('PhysicalOp') || 'Unknown';
   const children = findChildRelOps(relOpEl);
+  const warningsEl = getChildElement(relOpEl, 'Warnings');
   
   return {
     nodeId: parseInt(relOpEl.getAttribute('NodeId') || '0', 10),
@@ -174,6 +281,7 @@ function parseRelOp(relOpEl: Element): RelOp {
     attributes: collectAttributes(relOpEl),
     outputColumns: parseOutputColumns(relOpEl),
     runtimeInfo: parseRuntimeInfo(relOpEl),
+    warnings: warningsEl ? parseWarnings(warningsEl) : undefined,
     children: children.map(parseRelOp),
     operationDetails: parseOperationDetails(relOpEl, physicalOp),
   };

@@ -6,6 +6,7 @@ import PlanLoader from '../components/PlanLoader.vue';
 import AnalysisPanel from '../components/AnalysisPanel.vue';
 import SqlViewer from '../components/SqlViewer.vue';
 import PlanComparison from '../components/PlanComparison.vue';
+import PlanOverview from '../components/PlanOverview.vue';
 import { usePlanState } from '../composables/planState';
 import { useResizePanel } from '../composables/useResizePanel';
 
@@ -33,7 +34,7 @@ const right = useResizePanel({
   },
 });
 
-type MainTab = 'execution' | 'analysis' | 'query' | 'xml';
+type MainTab = 'execution' | 'analysis' | 'query' | 'xml' | 'overview';
 const activeMainTab = ref<MainTab>('execution');
 
 function prettyPrintXml(xml: string): string {
@@ -156,6 +157,16 @@ const handleComparisonFile = async (event: Event) => {
             <i class="fa-solid fa-file-code text-amber-400"></i>
             XML
           </button>
+          <button
+            class="flex items-center gap-2 px-4 py-3 text-sm font-semibold transition-colors border-b-2"
+            :class="activeMainTab === 'overview'
+              ? 'border-cyan-400 text-white'
+              : 'border-transparent text-slate-400 hover:text-slate-200'"
+            @click="activeMainTab = 'overview'"
+          >
+            <i class="fa-solid fa-clipboard-list text-cyan-400"></i>
+            Plan Overview
+          </button>
           <div class="ml-auto px-3">
             <input
               ref="comparisonFileInput"
@@ -199,6 +210,9 @@ const handleComparisonFile = async (event: Event) => {
             <div v-else class="flex items-center justify-center h-full text-slate-500 text-sm">
               No statement selected
             </div>
+          </div>
+          <div v-show="activeMainTab === 'overview'" class="absolute inset-0">
+            <PlanOverview @statement-selected="activeMainTab = 'execution'" />
           </div>
           <div v-show="activeMainTab === 'xml'" class="absolute inset-0 overflow-auto">
             <pre v-if="selectedStatementXml" class="p-4 text-xs font-mono text-slate-300 leading-relaxed whitespace-pre">{{ selectedStatementXml }}</pre>

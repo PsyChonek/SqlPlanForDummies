@@ -175,6 +175,58 @@ describe('parseSqlPlan', () => {
     expect(root.children[1].physicalOp).toBe('Index Scan');
   });
 
+  it('parses statement-level WaitStats and QueryTimeStats', () => {
+    const actualPlanXml = `<?xml version="1.0"?>
+      <ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.5" Build="17.0">
+        <BatchSequence>
+          <Batch>
+            <Statements>
+              <StmtSimple StatementId="1" StatementText="SELECT * FROM Users" StatementType="SELECT"
+                          StatementSubTreeCost="0.01" StatementEstRows="100">
+                <QueryPlan DegreeOfParallelism="1">
+                  <WaitStats>
+                    <Wait WaitType="LCK_M_S" WaitTimeMs="4980" WaitCount="1" />
+                    <Wait WaitType="PAGEIOLATCH_SH" WaitTimeMs="12" WaitCount="3" />
+                    <Wait WaitType="MEMORY_ALLOCATION_EXT" WaitTimeMs="0" WaitCount="5" />
+                  </WaitStats>
+                  <QueryTimeStats CpuTime="15" ElapsedTime="5002" />
+                  <RelOp NodeId="0" PhysicalOp="Table Scan" LogicalOp="Table Scan"
+                         EstimateRows="100" EstimateCPU="0.001" EstimateIO="0.005"
+                         EstimatedTotalSubtreeCost="0.006" AvgRowSize="50" Parallel="false">
+                    <OutputList></OutputList>
+                  </RelOp>
+                </QueryPlan>
+              </StmtSimple>
+            </Statements>
+          </Batch>
+        </BatchSequence>
+      </ShowPlanXML>`;
+
+    const plan = parseSqlPlan(actualPlanXml);
+    const queryPlan = plan.batches[0].statements[0].queryPlan;
+
+    expect(queryPlan.queryTimeStats).toEqual({
+      cpuTimeMs: 15,
+      elapsedTimeMs: 5002,
+      udfCpuTimeMs: undefined,
+      udfElapsedTimeMs: undefined,
+    });
+
+    // Zero-time waits are dropped, remaining sorted descending by wait time
+    expect(queryPlan.waitStats).toEqual([
+      { waitType: 'LCK_M_S', waitTimeMs: 4980, waitCount: 1 },
+      { waitType: 'PAGEIOLATCH_SH', waitTimeMs: 12, waitCount: 3 },
+    ]);
+  });
+
+  it('leaves waitStats and queryTimeStats undefined for estimated plans', () => {
+    const plan = parseSqlPlan(simpleXml);
+    const queryPlan = plan.batches[0].statements[0].queryPlan;
+
+    expect(queryPlan.waitStats).toBeUndefined();
+    expect(queryPlan.queryTimeStats).toBeUndefined();
+  });
+
   it('handles missing optional attributes', () => {
     const minimalXml = `<?xml version="1.0"?>
       <ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan">
@@ -428,5 +480,111 @@ describe('getMostExpensiveStatement', () => {
 
     // With all costs at 0, returns null since maxCost starts at 0
     expect(expensive).toBeNull();
+  });
+});
+
+describe('warnings and missing indexes', () => {
+  const warningsXml = `<?xml version="1.0" encoding="utf-16"?>
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.5" Build="17.0">
+  <BatchSequence>
+    <Batch>
+      <Statements>
+        <StmtSimple StatementId="1" StatementText="SELECT * FROM Users u JOIN Orders o ON 1=1" StatementType="SELECT"
+                    StatementSubTreeCost="1.0" StatementEstRows="100">
+          <QueryPlan DegreeOfParallelism="1">
+            <MissingIndexes>
+              <MissingIndexGroup Impact="87.5">
+                <MissingIndex Database="[MyDb]" Schema="[dbo]" Table="[Orders]">
+                  <ColumnGroup Usage="EQUALITY">
+                    <Column Name="[UserId]" ColumnId="2" />
+                  </ColumnGroup>
+                  <ColumnGroup Usage="INCLUDE">
+                    <Column Name="[Amount]" ColumnId="3" />
+                    <Column Name="[CreatedAt]" ColumnId="4" />
+                  </ColumnGroup>
+                </MissingIndex>
+              </MissingIndexGroup>
+            </MissingIndexes>
+            <Warnings>
+              <PlanAffectingConvert ConvertIssue="Seek Plan" Expression="CONVERT_IMPLICIT(nvarchar(50),[o].[Code],0)" />
+            </Warnings>
+            <RelOp NodeId="0" PhysicalOp="Sort" LogicalOp="Sort"
+                   EstimateRows="100" EstimateCPU="0.01" EstimateIO="0.01"
+                   EstimatedTotalSubtreeCost="1.0" AvgRowSize="100" Parallel="false">
+              <OutputList></OutputList>
+              <Warnings>
+                <SpillToTempDb SpillLevel="2" SpilledThreadCount="1" />
+                <SortSpillDetails GrantedMemoryKb="1024" UsedMemoryKb="2048" WritesToTempDb="500" ReadsFromTempDb="500" />
+              </Warnings>
+              <RelOp NodeId="1" PhysicalOp="Nested Loops" LogicalOp="Inner Join"
+                     EstimateRows="100" EstimateCPU="0.001" EstimateIO="0"
+                     EstimatedTotalSubtreeCost="0.9" AvgRowSize="100" Parallel="false">
+                <OutputList></OutputList>
+                <Warnings NoJoinPredicate="true" />
+              </RelOp>
+            </RelOp>
+          </QueryPlan>
+        </StmtSimple>
+      </Statements>
+    </Batch>
+  </BatchSequence>
+</ShowPlanXML>`;
+
+  it('parses operator-level spill warnings', () => {
+    const plan = parseSqlPlan(warningsXml);
+    const sortNode = plan.batches[0].statements[0].queryPlan.relOp;
+
+    expect(sortNode.warnings).toBeDefined();
+    expect(sortNode.warnings!.spills).toHaveLength(2);
+    expect(sortNode.warnings!.spills![0]).toEqual({
+      kind: 'SpillToTempDb',
+      spillLevel: 2,
+      spilledThreadCount: 1,
+      writesToTempDb: undefined,
+      readsFromTempDb: undefined,
+    });
+    expect(sortNode.warnings!.spills![1].kind).toBe('Sort');
+    expect(sortNode.warnings!.spills![1].writesToTempDb).toBe(500);
+  });
+
+  it('parses NoJoinPredicate warning', () => {
+    const plan = parseSqlPlan(warningsXml);
+    const joinNode = plan.batches[0].statements[0].queryPlan.relOp.children[0];
+
+    expect(joinNode.warnings?.noJoinPredicate).toBe(true);
+  });
+
+  it('parses statement-level PlanAffectingConvert warning', () => {
+    const plan = parseSqlPlan(warningsXml);
+    const queryPlan = plan.batches[0].statements[0].queryPlan;
+
+    expect(queryPlan.warnings?.planAffectingConverts).toHaveLength(1);
+    expect(queryPlan.warnings!.planAffectingConverts![0].convertIssue).toBe('Seek Plan');
+    expect(queryPlan.warnings!.planAffectingConverts![0].expression).toContain('CONVERT_IMPLICIT');
+  });
+
+  it('parses missing index suggestions', () => {
+    const plan = parseSqlPlan(warningsXml);
+    const missing = plan.batches[0].statements[0].queryPlan.missingIndexes;
+
+    expect(missing).toHaveLength(1);
+    expect(missing![0]).toEqual({
+      impact: 87.5,
+      database: 'MyDb',
+      schema: 'dbo',
+      table: 'Orders',
+      equalityColumns: ['UserId'],
+      inequalityColumns: [],
+      includeColumns: ['Amount', 'CreatedAt'],
+    });
+  });
+
+  it('leaves warnings and missingIndexes undefined when absent', () => {
+    const plan = parseSqlPlan(simpleXml);
+    const stmt = plan.batches[0].statements[0];
+
+    expect(stmt.queryPlan.warnings).toBeUndefined();
+    expect(stmt.queryPlan.missingIndexes).toBeUndefined();
+    expect(stmt.queryPlan.relOp.warnings).toBeUndefined();
   });
 });

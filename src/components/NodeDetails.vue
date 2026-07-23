@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { usePlanState } from '../composables/planState';
 import CollapsiblePanel from './CollapsiblePanel.vue';
+import type { RelOp } from '../types/sqlplan';
 import {
   getOperatorIcon,
   getCostSeverity,
@@ -10,7 +11,7 @@ import {
   formatRows
 } from '../types/sqlplan';
 
-const { state, getNodeCostPercentage } = usePlanState();
+const { state, getNodeCostPercentage, allNodes } = usePlanState();
 
 const selectedNode = computed(() => state.selectedNode);
 const selectedEdge = computed(() => state.selectedEdge);
@@ -275,6 +276,172 @@ const filteredProperties = computed(() => {
   );
 });
 
+const copied = ref('');
+const copyText = async (text: string, label: string) => {
+  await navigator.clipboard.writeText(text);
+  copied.value = label;
+  setTimeout(() => { copied.value = ''; }, 1500);
+};
+
+// Chain from the plan root down to the selected node, so the copied text shows
+// which operator is driving this one (e.g. a nested loop probing it per outer row).
+const ancestorChain = computed<RelOp[]>(() => {
+  if (!selectedNode.value) return [];
+  const parentOf = new Map<number, RelOp>();
+  for (const node of allNodes.value) {
+    for (const child of node.children) parentOf.set(child.nodeId, node);
+  }
+  const chain: RelOp[] = [];
+  let current: RelOp | undefined = parentOf.get(selectedNode.value.nodeId);
+  const seen = new Set<number>();
+  while (current && !seen.has(current.nodeId)) {
+    seen.add(current.nodeId);
+    chain.unshift(current);
+    current = parentOf.get(current.nodeId);
+  }
+  return chain;
+});
+
+function describeOp(node: RelOp): string {
+  const parts = [`${node.physicalOp} (Node ${node.nodeId})`];
+  parts.push(`est. rows ${formatRows(node.estimateRows)}`);
+  if (node.runtimeInfo) {
+    parts.push(`actual rows ${formatRows(node.runtimeInfo.actualRows)}`);
+    parts.push(`${node.runtimeInfo.actualExecutions} execution(s)`);
+  }
+  return parts.join(', ');
+}
+
+function buildNodeMarkdown(): string {
+  const node = selectedNode.value;
+  if (!node) return '';
+
+  const statement = state.selectedStatement;
+  const plan = statement?.queryPlan;
+
+  const lines: string[] = [];
+  lines.push(`# ${node.physicalOp} (Node ${node.nodeId})`);
+
+  // Query first: the node alone doesn't explain why it's being executed.
+  if (statement) {
+    lines.push('');
+    lines.push('## Query');
+    lines.push(`- **Statement Type:** ${statement.statementType}`);
+    lines.push(`- **Statement Subtree Cost:** ${statement.statementSubTreeCost.toFixed(6)}`);
+    if (statement.statementOptmLevel) lines.push(`- **Optimization Level:** ${statement.statementOptmLevel}`);
+    if (plan) lines.push(`- **Degree of Parallelism:** ${plan.degreeOfParallelism}`);
+    lines.push('');
+    lines.push('```sql');
+    lines.push(statement.statementText.trim());
+    lines.push('```');
+  }
+
+  if (plan?.parameters?.length) {
+    lines.push('');
+    lines.push('## Parameters');
+    for (const p of plan.parameters) {
+      const values = [];
+      if (p.compiledValue) values.push(`compiled: ${p.compiledValue}`);
+      if (p.runtimeValue) values.push(`runtime: ${p.runtimeValue}`);
+      lines.push(`- **${p.column}** (${p.dataType})${values.length ? ` - ${values.join(', ')}` : ''}`);
+    }
+  }
+
+  // Plan context: what feeds this node and what consumes its rows.
+  lines.push('');
+  lines.push('## Plan Context');
+  if (ancestorChain.value.length > 0) {
+    lines.push('Ancestors (root first):');
+    ancestorChain.value.forEach((ancestor, i) => {
+      lines.push(`${'  '.repeat(i)}- ${describeOp(ancestor)}`);
+    });
+    lines.push(`${'  '.repeat(ancestorChain.value.length)}- **${describeOp(node)}** <- selected`);
+  } else {
+    lines.push(`- **${describeOp(node)}** <- selected (plan root)`);
+  }
+  if (node.children.length > 0) {
+    lines.push('');
+    lines.push('Children:');
+    for (const child of node.children) lines.push(`- ${describeOp(child)}`);
+  }
+
+  lines.push('');
+  lines.push('## Node');
+  lines.push(`- **Cost Percentage:** ${costPercentage.value.toFixed(1)}%`);
+
+  lines.push('');
+  lines.push('## Metrics');
+  for (const m of runtimeMetrics.value) {
+    lines.push(`- **${m.label}:** ${m.value}`);
+  }
+
+  if (indexDetails.value) {
+    lines.push('');
+    lines.push('## Index Information');
+    lines.push(`- **Table:** ${indexDetails.value.table}`);
+    if (indexDetails.value.index) lines.push(`- **Index:** ${indexDetails.value.index}`);
+    if (indexDetails.value.indexKind) lines.push(`- **Type:** ${indexDetails.value.indexKind}`);
+    lines.push(`- **Ordered:** ${indexDetails.value.ordered ? 'Yes' : 'No'}`);
+    if (indexDetails.value.direction) lines.push(`- **Scan Direction:** ${indexDetails.value.direction}`);
+  }
+
+  if (outputColumns.value.length > 0) {
+    lines.push('');
+    lines.push('## Output Columns');
+    for (const col of outputColumns.value) lines.push(`- ${col}`);
+  }
+
+  if (predicates.value.length > 0) {
+    lines.push('');
+    lines.push('## Predicates');
+    for (const p of predicates.value) lines.push(`- **${p.type}:** ${p.expression}`);
+  }
+
+  if (node.parallel) {
+    lines.push('');
+    lines.push('## Parallel Execution');
+    lines.push('- This operator runs in parallel.');
+  }
+
+  if (plan?.missingIndexes?.length) {
+    lines.push('');
+    lines.push('## Missing Indexes (optimizer suggestions for this statement)');
+    for (const mi of plan.missingIndexes) {
+      lines.push(`- **${mi.table}** (impact ${mi.impact.toFixed(1)}%)`);
+      if (mi.equalityColumns.length) lines.push(`  - Equality: ${mi.equalityColumns.join(', ')}`);
+      if (mi.inequalityColumns.length) lines.push(`  - Inequality: ${mi.inequalityColumns.join(', ')}`);
+      if (mi.includeColumns.length) lines.push(`  - Include: ${mi.includeColumns.join(', ')}`);
+    }
+  }
+
+  const warnings = plan?.warnings;
+  if (warnings) {
+    const warningLines: string[] = [];
+    if (warnings.noJoinPredicate) warningLines.push('- No join predicate');
+    if (warnings.unmatchedIndexes) warningLines.push('- Unmatched indexes');
+    for (const spill of warnings.spills ?? []) warningLines.push(`- Spill: ${spill.kind}`);
+    for (const c of warnings.planAffectingConverts ?? []) {
+      warningLines.push(`- Plan-affecting convert (${c.convertIssue}): ${c.expression}`);
+    }
+    for (const col of warnings.columnsWithNoStatistics ?? []) {
+      warningLines.push(`- No statistics: ${[col.table, col.column].filter(Boolean).join('.')}`);
+    }
+    if (warningLines.length) {
+      lines.push('');
+      lines.push('## Statement Warnings');
+      lines.push(...warningLines);
+    }
+  }
+
+  lines.push('');
+  lines.push('## All Properties');
+  for (const prop of formattedProperties.value) {
+    lines.push(`- **${prop.key}:** ${prop.value}`);
+  }
+
+  return lines.join('\n');
+}
+
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
@@ -301,6 +468,16 @@ function highlightText(text: string, term: string): string {
       <h3 class="flex items-center gap-2 text-lg font-bold text-white">
         <i class="fa-solid fa-info-circle text-cyan-400"></i>
         Node Details
+        <button
+          v-if="selectedNode"
+          @click="copyText(buildNodeMarkdown(), 'node')"
+          class="ml-auto shrink-0 flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors"
+          :class="copied === 'node' ? 'bg-green-600/30 text-green-300' : 'bg-indigo-600/30 text-indigo-300 hover:bg-indigo-600/50 hover:text-indigo-200'"
+          title="Copy node details, query and plan context formatted for LLM analysis"
+        >
+          <i :class="copied === 'node' ? 'fa-solid fa-check' : 'fa-solid fa-robot'"></i>
+          {{ copied === 'node' ? 'Copied!' : 'Copy AI' }}
+        </button>
       </h3>
     </div>
     

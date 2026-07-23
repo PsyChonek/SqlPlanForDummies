@@ -35,6 +35,63 @@ export interface QueryPlan {
   memoryGrant?: MemoryGrantInfo;
   relOp: RelOp;
   parameters?: Parameter[];
+  // Statement-level wait statistics (actual plans, SQL Server 2016 SP1+)
+  waitStats?: WaitStat[];
+  // Statement-level CPU/elapsed time — includes time spent waiting (e.g. on locks)
+  queryTimeStats?: QueryTimeStats;
+  // Statement-level Warnings element (e.g. PlanAffectingConvert)
+  warnings?: PlanWarnings;
+  // Missing index suggestions from the optimizer
+  missingIndexes?: MissingIndex[];
+}
+
+export interface PlanWarnings {
+  noJoinPredicate?: boolean;
+  unmatchedIndexes?: boolean;
+  spills?: SpillWarning[];
+  planAffectingConverts?: PlanAffectingConvert[];
+  columnsWithNoStatistics?: ColumnReference[];
+  memoryGrantWarnings?: MemoryGrantWarning[];
+}
+
+export interface SpillWarning {
+  // 'SpillToTempDb' | 'Sort' | 'Hash'
+  kind: string;
+  spillLevel?: number;
+  spilledThreadCount?: number;
+  writesToTempDb?: number;
+  readsFromTempDb?: number;
+}
+
+export interface PlanAffectingConvert {
+  // 'Cardinality Estimate' | 'Seek Plan'
+  convertIssue: string;
+  expression: string;
+}
+
+export interface MemoryGrantWarning {
+  kind: string;
+  requestedMemoryKb?: number;
+  grantedMemoryKb?: number;
+  usedMemoryKb?: number;
+}
+
+export interface MissingIndex {
+  // Estimated improvement in percent (0-100)
+  impact: number;
+  database?: string;
+  schema?: string;
+  table: string;
+  equalityColumns: string[];
+  inequalityColumns: string[];
+  includeColumns: string[];
+}
+
+export interface QueryTimeStats {
+  cpuTimeMs: number;
+  elapsedTimeMs: number;
+  udfCpuTimeMs?: number;
+  udfElapsedTimeMs?: number;
 }
 
 export interface MemoryGrantInfo {
@@ -76,6 +133,9 @@ export interface RelOp {
   
   // Runtime information (actual execution stats)
   runtimeInfo?: RuntimeInfo;
+
+  // Operator-level Warnings element (spills, implicit conversions, ...)
+  warnings?: PlanWarnings;
   
   // Child operators
   children: RelOp[];

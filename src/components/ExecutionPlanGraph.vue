@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import * as d3 from 'd3';
 import { usePlanState } from '../composables/planState';
 import type { RelOp } from '../types/sqlplan';
@@ -188,6 +188,18 @@ const abbreviateWaitType = (waitType: string): string => {
 // Returns true if any wait is a lock wait (LCK_M_*)
 const hasLockWait = (relOp: RelOp): boolean =>
   relOp.runtimeInfo?.waitStats?.some(w => w.waitType.startsWith('LCK_M_')) ?? false;
+
+// Statement-level stats for the header — QueryTimeStats elapsed includes wait time
+const statementElapsedMs = computed(() =>
+  state.selectedStatement?.queryPlan.queryTimeStats?.elapsedTimeMs
+  ?? state.selectedStatement?.queryPlan.relOp.runtimeInfo?.actualElapsedMs
+  ?? null
+);
+
+// Top statement-level wait (parser sorts waits descending by time)
+const topStatementWait = computed(() =>
+  state.selectedStatement?.queryPlan.waitStats?.[0] ?? null
+);
 
 // Get a short subtitle for a node based on its operation details
 const getNodeSubtitle = (relOp: RelOp): string => {
@@ -877,7 +889,14 @@ onUnmounted(() => {
         <i class="fa-solid fa-diagram-project text-blue-400"></i>
         <span class="text-sm font-semibold text-slate-200">Execution Plan</span>
       </div>
-      <div v-if="state.selectedStatement" class="text-xs text-slate-400">
+      <div v-if="state.selectedStatement" class="text-xs text-slate-400 flex items-center gap-3">
+        <span v-if="topStatementWait" :class="topStatementWait.waitType.startsWith('LCK_M_') ? 'text-red-400' : 'text-amber-400'">
+          <i v-if="topStatementWait.waitType.startsWith('LCK_M_')" class="fa-solid fa-lock mr-1"></i>
+          {{ abbreviateWaitType(topStatementWait.waitType) }}: {{ formatTime(topStatementWait.waitTimeMs) }}
+        </span>
+        <span v-if="statementElapsedMs != null" class="text-slate-300">
+          <i class="fa-solid fa-stopwatch mr-1"></i>{{ formatTime(statementElapsedMs) }}
+        </span>
         <span>Total Cost: {{ state.selectedStatement.statementSubTreeCost.toFixed(6) }}</span>
       </div>
     </div>

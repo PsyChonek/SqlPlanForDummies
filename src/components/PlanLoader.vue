@@ -3,6 +3,17 @@ import { ref, computed, onMounted } from 'vue';
 import { usePlanState } from '../composables/planState';
 import { useQueryHistory, type PlanHistoryEntry } from '../composables/useQueryHistory';
 import { formatTime } from '../types/sqlplan';
+import type { Statement } from '../types/sqlplan';
+
+// True elapsed time: statement-level QueryTimeStats includes lock/wait time,
+// root operator elapsed is the fallback for older plans
+const statementElapsedMs = (stmt: Statement): number | null =>
+  stmt.queryPlan.queryTimeStats?.elapsedTimeMs
+  ?? stmt.queryPlan.relOp.runtimeInfo?.actualElapsedMs
+  ?? null;
+
+const hasLockWaits = (stmt: Statement): boolean =>
+  stmt.queryPlan.waitStats?.some(w => w.waitType.startsWith('LCK_M_')) ?? false;
 
 const { state, loadPlan, loadComparisonPlan, statements, selectStatement } = usePlanState();
 const { recentPlans, loadHistory } = useQueryHistory();
@@ -47,8 +58,8 @@ const sortedStatements = computed(() => {
       return [...indexed].sort((a, b) => b.stmt.statementSubTreeCost - a.stmt.statementSubTreeCost);
     case 'duration':
       return [...indexed].sort((a, b) => {
-        const aMs = a.stmt.queryPlan.relOp.runtimeInfo?.actualElapsedMs ?? -1;
-        const bMs = b.stmt.queryPlan.relOp.runtimeInfo?.actualElapsedMs ?? -1;
+        const aMs = statementElapsedMs(a.stmt) ?? -1;
+        const bMs = statementElapsedMs(b.stmt) ?? -1;
         return bMs - aMs;
       });
     default:
@@ -226,9 +237,14 @@ const setStatus = (message: string, error = false) => {
               </span>
               <span class="text-xs opacity-75 flex items-center gap-2">
                 <span>Cost: {{ stmt.statementSubTreeCost.toFixed(4) }}</span>
-                <span v-if="stmt.queryPlan.relOp.runtimeInfo?.actualElapsedMs != null">
-                  {{ formatTime(stmt.queryPlan.relOp.runtimeInfo.actualElapsedMs) }}
+                <span v-if="statementElapsedMs(stmt) != null">
+                  {{ formatTime(statementElapsedMs(stmt)!) }}
                 </span>
+                <i
+                  v-if="hasLockWaits(stmt)"
+                  class="fa-solid fa-lock text-red-400"
+                  title="Statement waited on locks"
+                ></i>
               </span>
             </div>
             <p class="text-xs mt-1 truncate opacity-75">
