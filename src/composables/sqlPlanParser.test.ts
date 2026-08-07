@@ -588,3 +588,82 @@ describe('warnings and missing indexes', () => {
     expect(stmt.queryPlan.relOp.warnings).toBeUndefined();
   });
 });
+
+describe('partitioned tables', () => {
+  it('parses partition info (Partitioned attribute, PtnId seek, RunTimePartitionSummary)', () => {
+    const partitionedXml = `<?xml version="1.0" encoding="utf-16"?>
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.5" Build="17.0">
+  <BatchSequence>
+    <Batch>
+      <Statements>
+        <StmtSimple StatementId="1" StatementText="SELECT * FROM IA_Data WHERE PartitionNumber = 1" StatementType="SELECT"
+                    StatementSubTreeCost="0.56" StatementEstRows="29207">
+          <QueryPlan DegreeOfParallelism="1">
+            <RelOp NodeId="1" PhysicalOp="Clustered Index Scan" LogicalOp="Clustered Index Scan"
+                   EstimateRows="29207" EstimateCPU="0.05" EstimateIO="0.48"
+                   EstimatedTotalSubtreeCost="0.53" AvgRowSize="323" Parallel="1" Partitioned="1">
+              <OutputList></OutputList>
+              <RunTimeInformation>
+                <RunTimePartitionSummary>
+                  <PartitionsAccessed PartitionCount="2">
+                    <PartitionRange Start="2" End="2" />
+                    <PartitionRange Start="4" End="4" />
+                  </PartitionsAccessed>
+                </RunTimePartitionSummary>
+                <RunTimeCountersPerThread Thread="0" ActualRows="29207" ActualExecutions="1"
+                                          ActualElapsedms="12" ActualCPUms="10" />
+              </RunTimeInformation>
+              <IndexScan Ordered="1" ScanDirection="FORWARD" Storage="RowStore">
+                <Object Database="[JobkaProduction]" Schema="[dbo]" Table="[IA_Data]" Index="[IX_IA_Data_ClusterID]" IndexKind="Clustered" />
+                <SeekPredicates>
+                  <SeekPredicateNew>
+                    <SeekKeys>
+                      <Prefix ScanType="EQ">
+                        <RangeColumns>
+                          <ColumnReference Column="PtnId1000" />
+                        </RangeColumns>
+                        <RangeExpressions>
+                          <ScalarOperator ScalarString="(2)" />
+                        </RangeExpressions>
+                      </Prefix>
+                    </SeekKeys>
+                  </SeekPredicateNew>
+                </SeekPredicates>
+              </IndexScan>
+            </RelOp>
+          </QueryPlan>
+        </StmtSimple>
+      </Statements>
+    </Batch>
+  </BatchSequence>
+</ShowPlanXML>`;
+
+    const plan = parseSqlPlan(partitionedXml);
+    const relOp = plan.batches[0].statements[0].queryPlan.relOp;
+
+    // Boolean attributes serialized as "1" must parse as true
+    expect(relOp.parallel).toBe(true);
+    expect(relOp.partitioned).toBe(true);
+
+    expect(relOp.runtimeInfo?.partitionsAccessed).toEqual({
+      partitionCount: 2,
+      ranges: [
+        { start: 2, end: 2 },
+        { start: 4, end: 4 },
+      ],
+    });
+
+    // Partition elimination seek key stays available via seek predicates
+    const prefix = relOp.operationDetails.indexScan?.seekPredicates?.[0]?.prefix;
+    expect(prefix?.rangeColumns[0].column).toBe('PtnId1000');
+    expect(prefix?.rangeExpressions[0]).toBe('(2)');
+  });
+
+  it('leaves partitioned and partitionsAccessed undefined for non-partitioned plans', () => {
+    const plan = parseSqlPlan(simpleXml);
+    const relOp = plan.batches[0].statements[0].queryPlan.relOp;
+
+    expect(relOp.partitioned).toBeUndefined();
+    expect(relOp.runtimeInfo?.partitionsAccessed).toBeUndefined();
+  });
+});

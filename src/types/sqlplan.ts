@@ -37,7 +37,7 @@ export interface QueryPlan {
   parameters?: Parameter[];
   // Statement-level wait statistics (actual plans, SQL Server 2016 SP1+)
   waitStats?: WaitStat[];
-  // Statement-level CPU/elapsed time — includes time spent waiting (e.g. on locks)
+  // Statement-level CPU/elapsed time - includes time spent waiting (e.g. on locks)
   queryTimeStats?: QueryTimeStats;
   // Statement-level Warnings element (e.g. PlanAffectingConvert)
   warnings?: PlanWarnings;
@@ -124,6 +124,8 @@ export interface RelOp {
   estimateRebinds?: number;
   estimateRewinds?: number;
   tableCardinality?: number;
+  // True when the operator accesses a partitioned table/index (Partitioned="1")
+  partitioned?: boolean;
   
   // Generic key-value pair for any attribute found in the XML
   attributes?: Record<string, string>;
@@ -150,6 +152,17 @@ export interface WaitStat {
   waitCount: number;
 }
 
+// Actual partitions touched at runtime (RunTimePartitionSummary, actual plans only)
+export interface PartitionRange {
+  start: number;
+  end: number;
+}
+
+export interface PartitionSummary {
+  partitionCount: number;
+  ranges: PartitionRange[];
+}
+
 export interface RuntimeInfo {
   threadId: number;
   actualRows: number;
@@ -172,6 +185,7 @@ export interface RuntimeInfo {
   batches?: number;
   executionMode?: 'Row' | 'Batch';
   waitStats?: WaitStat[];
+  partitionsAccessed?: PartitionSummary;
 }
 
 export interface ColumnReference {

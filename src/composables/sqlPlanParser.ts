@@ -25,6 +25,7 @@ import type {
   PlanWarnings,
   SpillWarning,
   MissingIndex,
+  PartitionSummary,
 } from '../types/sqlplan';
 
 /**
@@ -273,7 +274,8 @@ function parseRelOp(relOpEl: Element): RelOp {
     estimateIO: parseFloat(relOpEl.getAttribute('EstimateIO') || '0'),
     estimatedTotalSubtreeCost: parseFloat(relOpEl.getAttribute('EstimatedTotalSubtreeCost') || '0'),
     avgRowSize: parseInt(relOpEl.getAttribute('AvgRowSize') || '0', 10),
-    parallel: relOpEl.getAttribute('Parallel') === 'true',
+    parallel: parseBoolAttr(relOpEl, 'Parallel'),
+    partitioned: parseBoolAttr(relOpEl, 'Partitioned') || undefined,
     estimatedExecutionMode: (relOpEl.getAttribute('EstimatedExecutionMode') as 'Row' | 'Batch') || undefined,
     estimateRebinds: parseFloat(relOpEl.getAttribute('EstimateRebinds') || '0') || undefined,
     estimateRewinds: parseFloat(relOpEl.getAttribute('EstimateRewinds') || '0') || undefined,
@@ -290,7 +292,7 @@ function parseRelOp(relOpEl: Element): RelOp {
 /**
  * Find all direct child RelOp elements (they can be nested in operation-specific elements).
  * Recursively descends into non-RelOp wrapper elements (NestedLoops, Filter, Predicate,
- * Subquery, etc.) but stops at each RelOp boundary — so only the immediate child operators
+ * Subquery, etc.) but stops at each RelOp boundary - so only the immediate child operators
  * are returned, not their descendants.  This handles arbitrary nesting depths such as
  * Filter > Predicate > ScalarOperator > Subquery > RelOp.
  */
@@ -301,7 +303,7 @@ function findChildRelOps(parentEl: Element): Element[] {
     for (const child of el.children) {
       if (child.localName === 'RelOp') {
         children.push(child);
-        // Stop here — this RelOp's own children belong to its subtree.
+        // Stop here - this RelOp's own children belong to its subtree.
       } else {
         search(child);
       }
@@ -356,6 +358,7 @@ function parseRuntimeInfo(relOpEl: Element): RuntimeInfo | undefined {
   const waitStatsEl = getChildElement(counterEl, 'WaitStats') ?? getChildElement(runtimeEl, 'WaitStats');
 
   return {
+    partitionsAccessed: parsePartitionSummary(runtimeEl),
     threadId: parseInt(counterEl.getAttribute('Thread') || '0', 10),
     actualRows: parseInt(counterEl.getAttribute('ActualRows') || '0', 10),
     actualRowsRead: parseInt(counterEl.getAttribute('ActualRowsRead') || '0', 10) || undefined,
@@ -376,6 +379,23 @@ function parseRuntimeInfo(relOpEl: Element): RuntimeInfo | undefined {
     batches: parseInt(counterEl.getAttribute('Batches') || '0', 10) || undefined,
     executionMode: (counterEl.getAttribute('ActualExecutionMode') as 'Row' | 'Batch') || undefined,
     waitStats: waitStatsEl ? parseWaitStats(waitStatsEl) : undefined,
+  };
+}
+
+/**
+ * Parse RunTimePartitionSummary (actual partitions accessed on a partitioned object)
+ */
+function parsePartitionSummary(runtimeEl: Element): PartitionSummary | undefined {
+  const summaryEl = getChildElement(runtimeEl, 'RunTimePartitionSummary');
+  const accessedEl = summaryEl ? getChildElement(summaryEl, 'PartitionsAccessed') : null;
+  if (!accessedEl) return undefined;
+
+  return {
+    partitionCount: parseInt(accessedEl.getAttribute('PartitionCount') || '0', 10),
+    ranges: getChildElements(accessedEl, 'PartitionRange').map(el => ({
+      start: parseInt(el.getAttribute('Start') || '0', 10),
+      end: parseInt(el.getAttribute('End') || '0', 10),
+    })),
   };
 }
 
@@ -518,7 +538,7 @@ function parseSeekRange(el: Element): SeekRange {
 }
 
 /**
- * Parse SeekPredicates — handles Prefix, StartRange, and EndRange seek keys
+ * Parse SeekPredicates - handles Prefix, StartRange, and EndRange seek keys
  */
 function parseSeekPredicates(seekPredicatesEl: Element): SeekPredicate[] {
   const predicates: SeekPredicate[] = [];
@@ -583,6 +603,12 @@ function parseNestedLoops(nestedLoopsEl: Element): NestedLoopsDetails {
 }
 
 // Helper functions for namespace-agnostic element access
+
+// ShowPlan XML serializes xs:boolean as either "true"/"false" or "1"/"0"
+function parseBoolAttr(el: Element, name: string): boolean {
+  const value = el.getAttribute(name);
+  return value === 'true' || value === '1';
+}
 
 function getChildElement(parent: Element, localName: string): Element | null {
   // Search direct children only

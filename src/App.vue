@@ -2,7 +2,10 @@
 import { ref, onMounted } from 'vue';
 import { useDbConnection } from './composables/useDbConnection';
 import { tauriInvoke } from './composables/tauriApi';
+import { useSelectAllScope } from './composables/useSelectAllScope';
 import ConnectionManager from './components/ConnectionManager.vue';
+
+useSelectAllScope();
 
 const { state: dbState } = useDbConnection();
 const showConnectionDialog = ref(false);
@@ -14,7 +17,7 @@ onMounted(async () => {
     const platform = await tauriInvoke<string>('get_platform');
     isWindows.value = platform === 'windows';
   } catch {
-    // Outside Tauri or command not available — hide XEL
+    // Outside Tauri or command not available - hide XEL
     isWindows.value = false;
   }
 });

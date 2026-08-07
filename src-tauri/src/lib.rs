@@ -4,7 +4,7 @@ mod xel;
 
 use db::connection::AppState;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 #[cfg(target_os = "windows")]
 use xel::store::XelAppState;
@@ -28,6 +28,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .manage(AppState {
             connection: Arc::new(Mutex::new(None)),
+            cancel: Arc::new(Notify::new()),
         });
 
     #[cfg(target_os = "windows")]
@@ -44,6 +45,7 @@ pub fn run() {
             db::commands::connect_db,
             db::commands::disconnect_db,
             db::commands::execute_query,
+            db::commands::cancel_query,
             db::commands::save_connection,
             db::commands::get_connections,
             db::commands::delete_connection,

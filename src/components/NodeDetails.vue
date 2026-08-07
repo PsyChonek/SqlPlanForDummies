@@ -145,6 +145,44 @@ const runtimeMetrics = computed(() => {
   return metrics;
 });
 
+// Internal column SQL Server uses for partition elimination seeks (e.g. PtnId1000)
+const PARTITION_ID_COLUMN = /^PtnId\d+$/i;
+
+// Strip the parentheses ShowPlan puts around constants: "(2)" -> "2"
+function stripConstParens(expr: string): string {
+  return expr.replace(/^\((.*)\)$/, '$1');
+}
+
+// Partition IDs targeted by seek keys on the internal partition ID column
+const partitionSeekValues = computed(() => {
+  const seeks = selectedNode.value?.operationDetails.indexScan?.seekPredicates;
+  if (!seeks) return [];
+  const values: string[] = [];
+  for (const seek of seeks) {
+    for (const range of [seek.prefix, seek.startRange, seek.endRange]) {
+      if (range && range.rangeColumns.some(c => PARTITION_ID_COLUMN.test(c.column))) {
+        values.push(...range.rangeExpressions.map(stripConstParens));
+      }
+    }
+  }
+  return values;
+});
+
+const partitionInfo = computed(() => {
+  const node = selectedNode.value;
+  if (!node) return null;
+  const accessed = node.runtimeInfo?.partitionsAccessed;
+  const seekValues = partitionSeekValues.value;
+  if (!node.partitioned && !accessed && seekValues.length === 0) return null;
+  return {
+    accessed,
+    seekValues,
+    rangesText: accessed
+      ? accessed.ranges.map(r => (r.start === r.end ? `${r.start}` : `${r.start}-${r.end}`)).join(', ')
+      : '',
+  };
+});
+
 // Index details
 const indexDetails = computed(() => {
   if (!selectedNode.value?.operationDetails.indexScan) return null;
@@ -183,23 +221,38 @@ const predicates = computed(() => {
     });
   }
   
-  // Seek predicates from index scan
+  // Seek predicates from index scan; seeks on the internal PtnId column are
+  // partition elimination, not a user-visible index column
+  const isPartitionRange = (range: { rangeColumns: { column: string }[] }) =>
+    range.rangeColumns.length > 0 && range.rangeColumns.every(c => PARTITION_ID_COLUMN.test(c.column));
+  const rangeColumnNames = (range: { rangeColumns: { column: string }[] }) =>
+    range.rangeColumns.map(c => (PARTITION_ID_COLUMN.test(c.column) ? 'Partition ID' : c.column)).join(', ');
+
   if (node.operationDetails.indexScan?.seekPredicates) {
     for (const seek of node.operationDetails.indexScan.seekPredicates) {
       if (seek.prefix) {
-        const cols = seek.prefix.rangeColumns.map(c => c.column).join(', ');
-        const exprs = seek.prefix.rangeExpressions.join(', ');
-        results.push({ type: `Seek (${seek.prefix.scanType})`, expression: `${cols} = ${exprs}` });
+        const cols = rangeColumnNames(seek.prefix);
+        const exprs = seek.prefix.rangeExpressions.map(stripConstParens).join(', ');
+        results.push({
+          type: isPartitionRange(seek.prefix) ? 'Partition Elimination' : `Seek (${seek.prefix.scanType})`,
+          expression: `${cols} = ${exprs}`,
+        });
       }
       if (seek.startRange) {
-        const cols = seek.startRange.rangeColumns.map(c => c.column).join(', ');
-        const exprs = seek.startRange.rangeExpressions.join(', ');
-        results.push({ type: `Seek Start (${seek.startRange.scanType})`, expression: `${cols} ${seek.startRange.scanType} ${exprs}` });
+        const cols = rangeColumnNames(seek.startRange);
+        const exprs = seek.startRange.rangeExpressions.map(stripConstParens).join(', ');
+        results.push({
+          type: isPartitionRange(seek.startRange) ? 'Partition Elimination Start' : `Seek Start (${seek.startRange.scanType})`,
+          expression: `${cols} ${seek.startRange.scanType} ${exprs}`,
+        });
       }
       if (seek.endRange) {
-        const cols = seek.endRange.rangeColumns.map(c => c.column).join(', ');
-        const exprs = seek.endRange.rangeExpressions.join(', ');
-        results.push({ type: `Seek End (${seek.endRange.scanType})`, expression: `${cols} ${seek.endRange.scanType} ${exprs}` });
+        const cols = rangeColumnNames(seek.endRange);
+        const exprs = seek.endRange.rangeExpressions.map(stripConstParens).join(', ');
+        results.push({
+          type: isPartitionRange(seek.endRange) ? 'Partition Elimination End' : `Seek End (${seek.endRange.scanType})`,
+          expression: `${cols} ${seek.endRange.scanType} ${exprs}`,
+        });
       }
     }
   }
@@ -373,6 +426,20 @@ function buildNodeMarkdown(): string {
   lines.push('## Metrics');
   for (const m of runtimeMetrics.value) {
     lines.push(`- **${m.label}:** ${m.value}`);
+  }
+
+  if (partitionInfo.value) {
+    const pi = partitionInfo.value;
+    lines.push('');
+    lines.push('## Partitioning');
+    lines.push('- Operator accesses a partitioned object.');
+    if (pi.seekValues.length) {
+      lines.push(`- **Partition elimination (seek):** Partition ID = ${pi.seekValues.join(', ')}`);
+    }
+    if (pi.accessed) {
+      lines.push(`- **Partitions accessed (actual):** ${pi.accessed.partitionCount}`);
+      if (pi.rangesText) lines.push(`- **Partition ranges:** ${pi.rangesText}`);
+    }
   }
 
   if (indexDetails.value) {
@@ -555,7 +622,32 @@ function highlightText(text: string, term: string): string {
           </div>
         </div>
       </div>
-      
+
+      <!-- Partitioning (shown prominently: partition access drives IO on partitioned tables) -->
+      <div v-if="partitionInfo" class="bg-violet-500/10 border border-violet-500/30 rounded-xl p-4">
+        <div class="flex items-center gap-2 text-violet-300 mb-2">
+          <i class="fa-solid fa-table-cells-large"></i>
+          <span class="text-sm font-semibold">Partitioned Table Access</span>
+        </div>
+        <div class="space-y-2 text-sm">
+          <div v-if="partitionInfo.accessed" class="flex justify-between">
+            <span class="text-slate-400">Partitions Accessed (actual)</span>
+            <span class="text-slate-200 font-semibold">{{ partitionInfo.accessed.partitionCount }}</span>
+          </div>
+          <div v-if="partitionInfo.rangesText" class="flex justify-between">
+            <span class="text-slate-400">Partition Range(s)</span>
+            <span class="text-slate-200 font-mono">{{ partitionInfo.rangesText }}</span>
+          </div>
+          <div v-if="partitionInfo.seekValues.length" class="flex justify-between">
+            <span class="text-slate-400">Partition Elimination (seek)</span>
+            <span class="text-slate-200 font-mono">Partition ID = {{ partitionInfo.seekValues.join(', ') }}</span>
+          </div>
+          <div v-if="!partitionInfo.accessed && !partitionInfo.seekValues.length" class="text-slate-300">
+            Operator accesses a partitioned object.
+          </div>
+        </div>
+      </div>
+
       <!-- Metrics Grid -->
       <CollapsiblePanel title="Metrics" icon="fa-chart-bar" icon-color="text-cyan-400" :badge="runtimeMetrics.length">
         <div class="grid grid-cols-2 gap-2">

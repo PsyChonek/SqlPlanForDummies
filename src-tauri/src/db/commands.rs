@@ -52,6 +52,8 @@ pub async fn connect_db(
 
 #[tauri::command]
 pub async fn disconnect_db(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    // Abort any query in flight before dropping the connection
+    state.cancel.notify_waiters();
     *state.connection.lock().await = None;
     Ok(())
 }
@@ -61,9 +63,33 @@ pub async fn execute_query(
     request: QueryRequest,
     state: tauri::State<'_, AppState>,
 ) -> Result<QueryResult, String> {
-    let lock = state.connection.lock().await;
-    let conn = lock.as_ref().ok_or("Not connected to database")?;
-    conn.execute_query(&request.sql, &request.plan_type).await
+    // Take a handle to the client without holding the state lock while the
+    // query runs, so cancel_query/disconnect_db stay responsive.
+    let conn = {
+        let lock = state.connection.lock().await;
+        let conn = lock.as_ref().ok_or("Not connected to database")?;
+        DbConnection {
+            client: conn.client.clone(),
+        }
+    };
+
+    tokio::select! {
+        result = conn.execute_query(&request.sql, &request.plan_type) => result,
+        _ = state.cancel.notified() => {
+            // The connection was abandoned mid-protocol and cannot be reused
+            *state.connection.lock().await = None;
+            Err("Query stopped. The connection was closed because it was interrupted mid-query; reconnect to run more queries.".to_string())
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn cancel_query(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    // Wakes the running execute_query (which drops the connection), then makes
+    // sure the connection is gone even if no query was in flight.
+    state.cancel.notify_waiters();
+    *state.connection.lock().await = None;
+    Ok(())
 }
 
 #[tauri::command]

@@ -10,8 +10,8 @@ import { useDbConnection } from '../composables/useDbConnection';
 import { useQueryHistory } from '../composables/useQueryHistory';
 import { useSqlEditorState } from '../composables/useSqlEditorState';
 
-const { state: execState, executeQuery } = useQueryExecution();
-const { state: dbState } = useDbConnection();
+const { state: execState, executeQuery, cancelQuery } = useQueryExecution();
+const { state: dbState, markDisconnected } = useDbConnection();
 const { addQueryEntry, addPlanEntry } = useQueryHistory();
 const { tabs, activeTabId, planType, getTab, setContent, addTab: addTabState, closeTab: closeTabState } = useSqlEditorState();
 
@@ -158,6 +158,15 @@ const handleExecute = async () => {
   }
 };
 
+const handleStop = async () => {
+  try {
+    await cancelQuery();
+  } finally {
+    // The backend closes the connection when a query is stopped
+    markDisconnected();
+  }
+};
+
 onMounted(() => {
   nextTick(mountEditor);
 });
@@ -183,6 +192,16 @@ onUnmounted(() => {
         >
           <i :class="execState.executing ? 'fa-solid fa-spinner fa-spin' : 'fa-solid fa-play'"></i>
           {{ execState.executing ? 'Executing...' : 'Execute' }}
+        </button>
+
+        <button
+          v-if="execState.executing"
+          class="px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors bg-red-600 hover:bg-red-500 text-white"
+          title="Stop the query and close the connection"
+          @click="handleStop"
+        >
+          <i class="fa-solid fa-stop"></i>
+          Stop
         </button>
 
         <span class="text-slate-500 text-xs">Ctrl+E / F5</span>

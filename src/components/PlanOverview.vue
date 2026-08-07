@@ -146,6 +146,7 @@ const goToStatement = (stmt: Statement) => {
     <div v-if="!state.plan" class="h-full flex flex-col items-center justify-center text-slate-500">
       <i class="fa-solid fa-clipboard-list text-5xl mb-4"></i>
       <p class="text-sm">Load a plan to see the overview</p>
+      <p class="text-xs text-slate-600 mt-1">You can paste a plan from the clipboard in the XML tab</p>
     </div>
 
     <template v-else>

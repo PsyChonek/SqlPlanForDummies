@@ -93,6 +93,11 @@ export const useDbConnection = () => {
     }
   };
 
+  const markDisconnected = () => {
+    state.connected = false;
+    state.activeConnection = null;
+  };
+
   const testConnection = async (
     host: string,
     port: number,
@@ -155,6 +160,7 @@ export const useDbConnection = () => {
     connect,
     connectSaved,
     disconnect,
+    markDisconnected,
     testConnection,
     loadConnections,
     saveConnection,

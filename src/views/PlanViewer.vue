@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import ExecutionPlanGraph from '../components/ExecutionPlanGraph.vue';
 import NodeDetails from '../components/NodeDetails.vue';
 import PlanLoader from '../components/PlanLoader.vue';
@@ -10,7 +10,7 @@ import PlanOverview from '../components/PlanOverview.vue';
 import { usePlanState } from '../composables/planState';
 import { useResizePanel } from '../composables/useResizePanel';
 
-const { state, loadComparisonPlan, toggleComparisonMode } = usePlanState();
+const { state, statements, loadPlan, loadComparisonPlan, toggleComparisonMode } = usePlanState();
 
 const containerRef = ref<HTMLElement | null>(null);
 const HANDLE_WIDTH = 16;
@@ -65,6 +65,86 @@ const selectedStatementXml = computed(() => {
 });
 const analysisPanelRef = ref<InstanceType<typeof AnalysisPanel> | null>(null);
 
+const xmlCopied = ref(false);
+const copyXml = async () => {
+  await navigator.clipboard.writeText(selectedStatementXml.value);
+  xmlCopied.value = true;
+  setTimeout(() => { xmlCopied.value = false; }, 1500);
+};
+
+// XML tab: paste a plan from the clipboard or edit the plan XML directly
+const xmlEditing = ref(false);
+const xmlDraft = ref('');
+const xmlStatus = ref('');
+const xmlError = ref(false);
+
+const setXmlStatus = (message: string, error = false) => {
+  xmlStatus.value = message;
+  xmlError.value = error;
+  if (!error) {
+    setTimeout(() => {
+      if (xmlStatus.value === message) xmlStatus.value = '';
+    }, 4000);
+  }
+};
+
+const loadPlanFromText = (text: string | null | undefined): boolean => {
+  const content = text?.trim();
+  if (!content) {
+    setXmlStatus('No XML to load.', true);
+    return false;
+  }
+  if (!content.includes('<ShowPlanXML')) {
+    setXmlStatus('Not a SQL Server execution plan (ShowPlanXML element not found).', true);
+    return false;
+  }
+  loadPlan(content);
+  if (state.error) {
+    setXmlStatus(`Parse error: ${state.error}`, true);
+    return false;
+  }
+  const count = statements.value.length;
+  setXmlStatus(`Loaded ${count} statement${count !== 1 ? 's' : ''}`);
+  return true;
+};
+
+const pasteXmlFromClipboard = async () => {
+  try {
+    loadPlanFromText(await navigator.clipboard.readText());
+  } catch {
+    setXmlStatus('Could not read the clipboard. Press Ctrl+V instead.', true);
+  }
+};
+
+const startXmlEdit = () => {
+  xmlDraft.value = state.rawXml ? prettyPrintXml(state.rawXml) : '';
+  xmlEditing.value = true;
+};
+
+const applyXmlEdit = () => {
+  if (loadPlanFromText(xmlDraft.value)) {
+    xmlEditing.value = false;
+  }
+};
+
+const cancelXmlEdit = () => {
+  xmlEditing.value = false;
+  xmlDraft.value = '';
+};
+
+const onXmlPaste = (evt: ClipboardEvent) => {
+  if (activeMainTab.value !== 'xml' || xmlEditing.value) return;
+  const target = evt.target as HTMLElement | null;
+  if (target?.closest('input, textarea, [contenteditable="true"]')) return;
+  const text = evt.clipboardData?.getData('text');
+  if (!text?.includes('<ShowPlanXML')) return;
+  evt.preventDefault();
+  loadPlanFromText(text);
+};
+
+onMounted(() => document.addEventListener('paste', onXmlPaste));
+onBeforeUnmount(() => document.removeEventListener('paste', onXmlPaste));
+
 const comparisonFileInput = ref<HTMLInputElement | null>(null);
 
 const openComparisonFilePicker = () => {
@@ -91,6 +171,7 @@ const handleComparisonFile = async (event: Event) => {
         v-show="!left.collapsed.value"
         class="overflow-hidden shrink-0"
         :style="{ width: left.size.value + 'px' }"
+        data-select-scope
       >
         <PlanLoader />
       </aside>
@@ -202,22 +283,95 @@ const handleComparisonFile = async (event: Event) => {
           <div v-show="activeMainTab === 'execution'" class="absolute inset-0">
             <ExecutionPlanGraph :show-header="false" />
           </div>
-          <div v-show="activeMainTab === 'analysis'" class="absolute inset-0">
+          <div v-show="activeMainTab === 'analysis'" class="absolute inset-0" data-select-scope>
             <AnalysisPanel ref="analysisPanelRef" :show-header="false" />
           </div>
-          <div v-show="activeMainTab === 'query'" class="absolute inset-0">
+          <div v-show="activeMainTab === 'query'" class="absolute inset-0" data-select-scope>
             <SqlViewer v-if="state.selectedStatement" :text="state.selectedStatement.statementText" />
             <div v-else class="flex items-center justify-center h-full text-slate-500 text-sm">
               No statement selected
             </div>
           </div>
-          <div v-show="activeMainTab === 'overview'" class="absolute inset-0">
+          <div v-show="activeMainTab === 'overview'" class="absolute inset-0" data-select-scope>
             <PlanOverview @statement-selected="activeMainTab = 'execution'" />
           </div>
-          <div v-show="activeMainTab === 'xml'" class="absolute inset-0 overflow-auto">
-            <pre v-if="selectedStatementXml" class="p-4 text-xs font-mono text-slate-300 leading-relaxed whitespace-pre">{{ selectedStatementXml }}</pre>
-            <div v-else class="flex items-center justify-center h-full text-slate-500 text-sm">
-              No statement selected
+          <div v-show="activeMainTab === 'xml'" class="absolute inset-0 flex flex-col">
+            <!-- XML toolbar -->
+            <div class="flex items-center gap-2 px-3 py-2 bg-slate-700/50 border-b border-slate-600 shrink-0">
+              <span
+                v-if="xmlStatus"
+                class="flex-1 text-xs truncate"
+                :class="xmlError ? 'text-red-300' : 'text-green-300'"
+              >
+                <i class="fa-solid mr-1" :class="xmlError ? 'fa-circle-exclamation' : 'fa-circle-check'"></i>
+                {{ xmlStatus }}
+              </span>
+              <span v-else class="flex-1 text-xs text-slate-500">
+                {{ xmlEditing ? 'Editing full plan XML' : 'Selected statement XML' }}
+              </span>
+              <template v-if="!xmlEditing">
+                <button
+                  v-if="selectedStatementXml"
+                  class="px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition-colors"
+                  :class="xmlCopied
+                    ? 'bg-green-600/30 text-green-300'
+                    : 'bg-slate-600 hover:bg-slate-500 text-slate-300'"
+                  @click="copyXml"
+                >
+                  <i class="fa-solid" :class="xmlCopied ? 'fa-check' : 'fa-copy'"></i>
+                  {{ xmlCopied ? 'Copied' : 'Copy' }}
+                </button>
+                <button
+                  class="px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 bg-slate-600 hover:bg-slate-500 text-slate-300 transition-colors"
+                  title="Load a plan from the clipboard (Ctrl+V)"
+                  @click="pasteXmlFromClipboard"
+                >
+                  <i class="fa-solid fa-paste"></i>
+                  Paste plan
+                </button>
+                <button
+                  class="px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 bg-slate-600 hover:bg-slate-500 text-slate-300 transition-colors"
+                  title="Edit the full plan XML and reload it"
+                  @click="startXmlEdit"
+                >
+                  <i class="fa-solid fa-pen"></i>
+                  Edit
+                </button>
+              </template>
+              <template v-else>
+                <button
+                  class="px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+                  @click="applyXmlEdit"
+                >
+                  <i class="fa-solid fa-check"></i>
+                  Apply
+                </button>
+                <button
+                  class="px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 bg-slate-600 hover:bg-slate-500 text-slate-300 transition-colors"
+                  @click="cancelXmlEdit"
+                >
+                  <i class="fa-solid fa-xmark"></i>
+                  Cancel
+                </button>
+              </template>
+            </div>
+
+            <!-- XML editor -->
+            <textarea
+              v-if="xmlEditing"
+              v-model="xmlDraft"
+              spellcheck="false"
+              placeholder="Paste SQL Server execution plan XML here"
+              class="flex-1 w-full bg-slate-900/60 p-4 text-xs font-mono text-slate-300 leading-relaxed resize-none outline-none"
+            ></textarea>
+
+            <!-- XML viewer -->
+            <div v-else class="flex-1 overflow-auto" data-select-scope>
+              <pre v-if="selectedStatementXml" class="p-4 text-xs font-mono text-slate-300 leading-relaxed whitespace-pre">{{ selectedStatementXml }}</pre>
+              <div v-else class="flex flex-col items-center justify-center h-full text-slate-500 text-sm gap-2">
+                <p>No plan loaded</p>
+                <p class="text-xs text-slate-600">Paste one from the clipboard (Ctrl+V) or click Edit to type XML</p>
+              </div>
             </div>
           </div>
         </div>
@@ -237,6 +391,7 @@ const handleComparisonFile = async (event: Event) => {
         v-show="!right.collapsed.value"
         class="overflow-hidden shrink-0"
         :style="{ width: right.size.value + 'px' }"
+        data-select-scope
       >
         <PlanComparison v-if="state.comparisonMode && state.comparisonPlan" />
         <NodeDetails v-else />

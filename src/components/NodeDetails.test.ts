@@ -54,6 +54,43 @@ const nestedXml = `<?xml version="1.0" encoding="utf-16"?>
   </BatchSequence>
 </ShowPlanXML>`;
 
+const partitionedXml = `<?xml version="1.0" encoding="utf-16"?>
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.5" Build="17.0">
+  <BatchSequence>
+    <Batch>
+      <Statements>
+        <StmtSimple StatementId="1" StatementText="SELECT * FROM IA_Data WHERE PartitionNumber = 1" StatementType="SELECT"
+                    StatementSubTreeCost="0.56" StatementEstRows="29207">
+          <QueryPlan DegreeOfParallelism="1">
+            <RelOp NodeId="0" PhysicalOp="Clustered Index Scan" LogicalOp="Clustered Index Scan"
+                   EstimateRows="29207" EstimateCPU="0.05" EstimateIO="0.48"
+                   EstimatedTotalSubtreeCost="0.56" AvgRowSize="323" Parallel="0" Partitioned="1">
+              <OutputList></OutputList>
+              <IndexScan Ordered="1" ScanDirection="FORWARD" Storage="RowStore">
+                <Object Database="[JobkaProduction]" Schema="[dbo]" Table="[IA_Data]" Index="[IX_IA_Data_ClusterID]" IndexKind="Clustered" />
+                <SeekPredicates>
+                  <SeekPredicateNew>
+                    <SeekKeys>
+                      <Prefix ScanType="EQ">
+                        <RangeColumns>
+                          <ColumnReference Column="PtnId1000" />
+                        </RangeColumns>
+                        <RangeExpressions>
+                          <ScalarOperator ScalarString="(2)" />
+                        </RangeExpressions>
+                      </Prefix>
+                    </SeekKeys>
+                  </SeekPredicateNew>
+                </SeekPredicates>
+              </IndexScan>
+            </RelOp>
+          </QueryPlan>
+        </StmtSimple>
+      </Statements>
+    </Batch>
+  </BatchSequence>
+</ShowPlanXML>`;
+
 describe('NodeDetails', () => {
   let planState: ReturnType<typeof usePlanState>;
 
@@ -139,5 +176,29 @@ describe('NodeDetails', () => {
 
   it('renders without error', () => {
     expect(() => mount(NodeDetails)).not.toThrow();
+  });
+
+  it('shows partition panel with elimination info for partitioned nodes', () => {
+    planState.loadPlan(partitionedXml);
+    const relOp = planState.state.selectedStatement!.queryPlan.relOp;
+    planState.selectNode(relOp);
+
+    const wrapper = mount(NodeDetails);
+
+    expect(wrapper.text()).toContain('Partitioned Table Access');
+    expect(wrapper.text()).toContain('Partition ID = 2');
+    // Seek on the internal PtnId column is labeled as partition elimination
+    expect(wrapper.text()).toContain('Partition Elimination');
+    expect(wrapper.text()).not.toContain('PtnId1000 =');
+  });
+
+  it('does not show partition panel for non-partitioned nodes', () => {
+    planState.loadPlan(simpleXml);
+    const relOp = planState.state.selectedStatement!.queryPlan.relOp;
+    planState.selectNode(relOp);
+
+    const wrapper = mount(NodeDetails);
+
+    expect(wrapper.text()).not.toContain('Partitioned Table Access');
   });
 });

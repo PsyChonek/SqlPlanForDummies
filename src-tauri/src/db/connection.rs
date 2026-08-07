@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use tiberius::{AuthMethod, Client, Column, Config, Row};
 use tokio::net::TcpStream;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tokio_util::compat::TokioAsyncWriteCompatExt;
 
 use super::types::{PlanType, QueryResult};
@@ -14,6 +14,7 @@ pub struct DbConnection {
 
 pub struct AppState {
     pub connection: Arc<Mutex<Option<DbConnection>>>,
+    pub cancel: Arc<Notify>,
 }
 
 impl DbConnection {
@@ -22,29 +23,50 @@ impl DbConnection {
         client: &mut TiberiusClient,
         sql: &str,
     ) -> Result<String, String> {
-        // Try to extract table name from simple queries like "SELECT * FROM table"
-        let sql_trimmed = sql.trim();
-        let sql_lower = sql_trimmed.to_lowercase();
+        // Only rewrite when the select list is exactly a lone star:
+        // SELECT [DISTINCT|ALL] [TOP n [PERCENT]] * FROM table ...
+        // Anything else (explicit columns, COUNT(*), aliased stars like t.*)
+        // is left untouched so multi-statement batches are never mangled.
+        let sql_lower = sql.to_ascii_lowercase();
 
-        // Handle simple SELECT * FROM table_name patterns
-        // Normalize whitespace to handle various spacing patterns
-        let normalized = sql_lower.split_whitespace().collect::<Vec<_>>().join(" ");
+        let select_pos = match sql_lower.find("select") {
+            Some(pos) => pos,
+            None => return Ok(sql.to_string()),
+        };
+        let from_pos = match sql_lower[select_pos..].find("from") {
+            Some(pos) => select_pos + pos,
+            None => return Ok(sql.to_string()),
+        };
 
-        // Also check for patterns like "select*from" (no spaces around *)
-        let has_select_star_from = normalized.starts_with("select * from")
-            || normalized.starts_with("select*from")
-            || (sql_lower.contains("select") && sql_lower.contains("*") && sql_lower.contains("from"));
-
-        if has_select_star_from {
-            // Extract table name (simple pattern matching)
-            let after_from = if let Some(pos) = sql_lower.find("from") {
-                sql_trimmed[pos + 4..].trim()
-            } else {
-                return Ok(sql.to_string());
-            };
-
+        let select_list = &sql[select_pos + "select".len()..from_pos];
+        let mut tokens: Vec<&str> = select_list.split_whitespace().collect();
+        if tokens
+            .first()
+            .map(|t| t.eq_ignore_ascii_case("distinct") || t.eq_ignore_ascii_case("all"))
+            .unwrap_or(false)
+        {
+            tokens.remove(0);
+        }
+        if tokens
+            .first()
+            .map(|t| t.eq_ignore_ascii_case("top"))
+            .unwrap_or(false)
+        {
+            tokens.remove(0);
+            if !tokens.is_empty() {
+                tokens.remove(0); // the row count
+            }
+            if tokens
+                .first()
+                .map(|t| t.eq_ignore_ascii_case("percent"))
+                .unwrap_or(false)
+            {
+                tokens.remove(0);
+            }
+        }
+        if tokens.len() == 1 && tokens[0] == "*" {
             // Get just the table name (before any WHERE, ORDER BY, etc.)
-            let table_name = after_from
+            let table_name = sql[from_pos + "from".len()..]
                 .split_whitespace()
                 .next()
                 .unwrap_or("")
@@ -137,19 +159,20 @@ impl DbConnection {
             }
 
             if has_type_casting && !columns.is_empty() {
-                // Rebuild the query with explicit column list
-                let column_list = columns.join(", ");
-
-                // Get everything after "FROM table_name" (WHERE, ORDER BY, etc.)
-                let from_pos = match sql_lower.find("from") {
-                    Some(pos) => pos,
+                // Replace only the star with the explicit column list so the rest
+                // of the batch (BEGIN TRAN, TOP, WHERE, following statements) is
+                // preserved exactly as written.
+                let star_pos = match sql[select_pos..from_pos].rfind('*') {
+                    Some(pos) => select_pos + pos,
                     None => return Ok(sql.to_string()),
                 };
-                let after_from = &sql_trimmed[from_pos + 4..].trim_start();
-                let table_end_pos = after_from.find(table_name).map(|p| p + table_name.len()).unwrap_or(0);
-                let rest_of_query = &after_from[table_end_pos..];
-
-                return Ok(format!("SELECT {} FROM {}{}", column_list, table_name, rest_of_query));
+                let column_list = columns.join(", ");
+                return Ok(format!(
+                    "{}{}{}",
+                    &sql[..star_pos],
+                    column_list,
+                    &sql[star_pos + 1..]
+                ));
             }
         }
 
@@ -218,45 +241,21 @@ impl DbConnection {
                     .await
                     .map_err(|e| e.to_string())?;
 
-                let stream = client
-                    .simple_query(sql)
-                    .await
-                    .map_err(|e| {
-                        let err_msg = e.to_string();
-                        if err_msg.contains("column type") {
-                            format!(
-                                "Query contains unsupported column types that cannot be used with execution plans.\n\
-                                Unsupported types include: date, geometry, geography, hierarchyid, and certain CLR types.\n\
-                                \nWorkarounds:\n\
-                                • Cast date columns to datetime: SELECT CAST(LicenseValidTo AS datetime) AS LicenseValidTo\n\
-                                • Exclude these columns from your SELECT statement\n\
-                                • Use 'No Plan' mode (though unsupported types will still cause errors)\n\
-                                \nOriginal error: {}", err_msg
-                            )
-                        } else {
-                            format!("Query failed: {}", err_msg)
-                        }
-                    })?;
+                let query_result = match client.simple_query(sql).await {
+                    Ok(stream) => stream
+                        .into_results()
+                        .await
+                        .map_err(|e| format_query_error(e.to_string(), true, false)),
+                    Err(e) => Err(format_query_error(e.to_string(), true, true)),
+                };
 
-                let result_sets = stream
-                    .into_results()
-                    .await
-                    .map_err(|e| {
-                        let err_msg = e.to_string();
-                        if err_msg.contains("column type") {
-                            format!(
-                                "Query contains unsupported column types that cannot be used with execution plans.\n\
-                                Unsupported types include: date, geometry, geography, hierarchyid, and certain CLR types.\n\
-                                \nWorkarounds:\n\
-                                • Cast date columns to datetime: SELECT CAST(LicenseValidTo AS datetime) AS LicenseValidTo\n\
-                                • Exclude these columns from your SELECT statement\n\
-                                • Use 'No Plan' mode (though unsupported types will still cause errors)\n\
-                                \nOriginal error: {}", err_msg
-                            )
-                        } else {
-                            err_msg
-                        }
-                    })?;
+                // Always restore the session state, even when the query failed,
+                // otherwise later queries on this connection return plans instead of rows
+                if let Ok(off) = client.simple_query("SET SHOWPLAN_XML OFF").await {
+                    off.into_results().await.ok();
+                }
+
+                let result_sets = query_result?;
 
                 let mut plan_xmls: Vec<String> = Vec::new();
                 for result_set in &result_sets {
@@ -267,14 +266,6 @@ impl DbConnection {
                     }
                 }
                 plan_xml = merge_showplan_xmls(plan_xmls);
-
-                client
-                    .simple_query("SET SHOWPLAN_XML OFF")
-                    .await
-                    .map_err(|e| format!("Failed to disable SHOWPLAN_XML: {}", e))?
-                    .into_results()
-                    .await
-                    .map_err(|e| e.to_string())?;
 
                 messages.push("Estimated execution plan generated.".to_string());
             }
@@ -288,45 +279,20 @@ impl DbConnection {
                     .await
                     .map_err(|e| e.to_string())?;
 
-                let stream = client
-                    .simple_query(sql)
-                    .await
-                    .map_err(|e| {
-                        let err_msg = e.to_string();
-                        if err_msg.contains("column type") {
-                            format!(
-                                "Query contains unsupported column types that cannot be used with execution plans.\n\
-                                Unsupported types include: date, geometry, geography, hierarchyid, and certain CLR types.\n\
-                                \nWorkarounds:\n\
-                                • Cast date columns to datetime: SELECT CAST(LicenseValidTo AS datetime) AS LicenseValidTo\n\
-                                • Exclude these columns from your SELECT statement\n\
-                                • Use 'No Plan' mode (though unsupported types will still cause errors)\n\
-                                \nOriginal error: {}", err_msg
-                            )
-                        } else {
-                            format!("Query failed: {}", err_msg)
-                        }
-                    })?;
+                let query_result = match client.simple_query(sql).await {
+                    Ok(stream) => stream
+                        .into_results()
+                        .await
+                        .map_err(|e| format_query_error(e.to_string(), true, false)),
+                    Err(e) => Err(format_query_error(e.to_string(), true, true)),
+                };
 
-                let result_sets = stream
-                    .into_results()
-                    .await
-                    .map_err(|e| {
-                        let err_msg = e.to_string();
-                        if err_msg.contains("column type") {
-                            format!(
-                                "Query contains unsupported column types that cannot be used with execution plans.\n\
-                                Unsupported types include: date, geometry, geography, hierarchyid, and certain CLR types.\n\
-                                \nWorkarounds:\n\
-                                • Cast date columns to datetime: SELECT CAST(LicenseValidTo AS datetime) AS LicenseValidTo\n\
-                                • Exclude these columns from your SELECT statement\n\
-                                • Use 'No Plan' mode (though unsupported types will still cause errors)\n\
-                                \nOriginal error: {}", err_msg
-                            )
-                        } else {
-                            err_msg
-                        }
-                    })?;
+                // Always restore the session state, even when the query failed
+                if let Ok(off) = client.simple_query("SET STATISTICS XML OFF").await {
+                    off.into_results().await.ok();
+                }
+
+                let result_sets = query_result?;
 
                 let mut plan_xmls: Vec<String> = Vec::new();
                 for result_set in &result_sets {
@@ -346,57 +312,19 @@ impl DbConnection {
                 }
                 plan_xml = merge_showplan_xmls(plan_xmls);
 
-                client
-                    .simple_query("SET STATISTICS XML OFF")
-                    .await
-                    .map_err(|e| format!("Failed to disable STATISTICS XML: {}", e))?
-                    .into_results()
-                    .await
-                    .map_err(|e| e.to_string())?;
-
                 messages.push(format!(
                     "Query executed. {} row(s) returned with actual execution plan.",
                     rows_affected
                 ));
             }
             PlanType::None => {
-                let stream = client
-                    .simple_query(sql)
-                    .await
-                    .map_err(|e| {
-                        let err_msg = e.to_string();
-                        if err_msg.contains("column type") {
-                            format!(
-                                "Query contains unsupported column types that are not supported by the database client.\n\
-                                Unsupported types include: date, geometry, geography, hierarchyid, and certain CLR types.\n\
-                                \nWorkarounds:\n\
-                                • Cast date columns to datetime: SELECT CAST(LicenseValidTo AS datetime) AS LicenseValidTo\n\
-                                • Exclude these columns from your SELECT statement\n\
-                                \nOriginal error: {}", err_msg
-                            )
-                        } else {
-                            format!("Query failed: {}", err_msg)
-                        }
-                    })?;
-
-                let result_sets = stream
-                    .into_results()
-                    .await
-                    .map_err(|e| {
-                        let err_msg = e.to_string();
-                        if err_msg.contains("column type") {
-                            format!(
-                                "Query contains unsupported column types that are not supported by the database client.\n\
-                                Unsupported types include: date, geometry, geography, hierarchyid, and certain CLR types.\n\
-                                \nWorkarounds:\n\
-                                • Cast date columns to datetime: SELECT CAST(LicenseValidTo AS datetime) AS LicenseValidTo\n\
-                                • Exclude these columns from your SELECT statement\n\
-                                \nOriginal error: {}", err_msg
-                            )
-                        } else {
-                            err_msg
-                        }
-                    })?;
+                let result_sets = match client.simple_query(sql).await {
+                    Ok(stream) => stream
+                        .into_results()
+                        .await
+                        .map_err(|e| format_query_error(e.to_string(), false, false)),
+                    Err(e) => Err(format_query_error(e.to_string(), false, true)),
+                }?;
 
                 for result_set in &result_sets {
                     if result_set.is_empty() {
@@ -433,6 +361,37 @@ impl DbConnection {
             duration_ms: duration.as_millis() as u64,
             rows_affected,
         })
+    }
+}
+
+fn format_query_error(err_msg: String, plan_mode: bool, wrap_query_failed: bool) -> String {
+    if err_msg.contains("column type") {
+        if plan_mode {
+            format!(
+                "Query contains unsupported column types that cannot be used with execution plans.\n\
+                Unsupported types include: date, geometry, geography, hierarchyid, and certain CLR types.\n\
+                \nWorkarounds:\n\
+                • Cast date columns to datetime: SELECT CAST(LicenseValidTo AS datetime) AS LicenseValidTo\n\
+                • Exclude these columns from your SELECT statement\n\
+                • Use 'No Plan' mode (though unsupported types will still cause errors)\n\
+                \nOriginal error: {}",
+                err_msg
+            )
+        } else {
+            format!(
+                "Query contains unsupported column types that are not supported by the database client.\n\
+                Unsupported types include: date, geometry, geography, hierarchyid, and certain CLR types.\n\
+                \nWorkarounds:\n\
+                • Cast date columns to datetime: SELECT CAST(LicenseValidTo AS datetime) AS LicenseValidTo\n\
+                • Exclude these columns from your SELECT statement\n\
+                \nOriginal error: {}",
+                err_msg
+            )
+        }
+    } else if wrap_query_failed {
+        format!("Query failed: {}", err_msg)
+    } else {
+        err_msg
     }
 }
 

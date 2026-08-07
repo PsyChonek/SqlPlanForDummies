@@ -50,6 +50,7 @@ const tabs: { id: XelView; label: string; icon: string }[] = [
       v-show="!left.collapsed.value"
       class="overflow-hidden flex flex-col shrink-0"
       :style="{ width: left.size.value + 'px' }"
+      data-select-scope
     >
       <XelFileLoader />
     </aside>
@@ -85,7 +86,7 @@ const tabs: { id: XelView; label: string; icon: string }[] = [
       <XelEventFilters v-if="hasData" />
 
       <!-- Content -->
-      <div class="flex-1 overflow-hidden relative">
+      <div class="flex-1 overflow-hidden relative" data-select-scope>
         <!-- Loading overlay (file loading only) -->
         <div v-if="state.loading" class="absolute inset-0 z-10 flex items-center justify-center bg-slate-800/80">
           <div class="flex flex-col items-center gap-3">
@@ -132,6 +133,7 @@ const tabs: { id: XelView; label: string; icon: string }[] = [
       v-show="!right.collapsed.value"
       class="overflow-hidden flex flex-col shrink-0"
       :style="{ width: right.size.value + 'px' }"
+      data-select-scope
     >
       <XelEventDetails />
     </aside>

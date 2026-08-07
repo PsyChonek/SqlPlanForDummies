@@ -81,6 +81,12 @@ export const useQueryExecution = () => {
     }
   };
 
+  const cancelQuery = async () => {
+    // Backend aborts the running query and closes the connection entirely,
+    // because the TDS session cannot be reused after an interrupted query
+    await tauriInvoke('cancel_query');
+  };
+
   const closeResultTab = (index: number) => {
     state.results.splice(index, 1);
     if (state.activeResultTab >= state.results.length) {
@@ -93,5 +99,5 @@ export const useQueryExecution = () => {
     state.activeResultTab = 0;
   };
 
-  return { state, executeQuery, closeResultTab, clearResults };
+  return { state, executeQuery, cancelQuery, closeResultTab, clearResults };
 };
