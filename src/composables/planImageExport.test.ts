@@ -1,13 +1,19 @@
 import {
   calculatePlanImageLayout,
   calculateRasterScale,
+  copyPlanPngToClipboard,
   createPlanImageDocument,
+  highlightSqlForImage,
   wrapQueryForImage,
 } from './planImageExport';
 
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
 
 describe('plan image export', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('wraps the complete query without truncating it', () => {
     const query = 'SELECT EmployeeId, FirstName, LastName FROM Employees WHERE DepartmentId = 42 ORDER BY LastName';
     const lines = wrapQueryForImage(query, 28);
@@ -21,6 +27,28 @@ describe('plan image export', () => {
     const lines = wrapQueryForImage('SELECT *\nFROM Employees\n\nWHERE Active = 1', 80);
 
     expect(lines).toEqual(['SELECT *', 'FROM Employees', '', 'WHERE Active = 1']);
+  });
+
+  it('highlights SQL syntax by token type', () => {
+    const [tokens] = highlightSqlForImage([
+      "SELECT [Name], COUNT(*) FROM Employees WHERE Id >= 42 AND Name = N'Ada' -- active employee",
+    ]);
+
+    expect(tokens).toContainEqual({ text: 'SELECT', kind: 'keyword' });
+    expect(tokens).toContainEqual({ text: '[Name]', kind: 'identifier' });
+    expect(tokens).toContainEqual({ text: 'COUNT', kind: 'function' });
+    expect(tokens).toContainEqual({ text: '>=', kind: 'operator' });
+    expect(tokens).toContainEqual({ text: '42', kind: 'number' });
+    expect(tokens).toContainEqual({ text: "N'Ada'", kind: 'string' });
+    expect(tokens).toContainEqual({ text: '-- active employee', kind: 'comment' });
+  });
+
+  it('keeps multiline comments highlighted across rendered lines', () => {
+    const lines = highlightSqlForImage(['SELECT /* first line', 'second line */ Id', 'FROM Employees']);
+
+    expect(lines[0][lines[0].length - 1]).toEqual({ text: '/* first line', kind: 'comment' });
+    expect(lines[1][0]).toEqual({ text: 'second line */', kind: 'comment' });
+    expect(lines[2][0]).toEqual({ text: 'FROM', kind: 'keyword' });
   });
 
   it('creates enough space for every graph node and the query panel', () => {
@@ -66,8 +94,23 @@ describe('plan image export', () => {
     expect(svg.querySelector('.edge-tooltip')).toBeNull();
     expect(svg.querySelector('.edge-hit-areas')).toBeNull();
     expect(svg.textContent).toContain('SELECT <all columns> FROM Employees');
-    expect(new XMLSerializer().serializeToString(svg)).toContain('SELECT &lt;all columns&gt; FROM Employees');
+    expect(svg.querySelectorAll('text tspan[fill]').length).toBeGreaterThan(1);
     expect(svg.querySelector('.nodes')?.parentElement?.getAttribute('transform')).not.toContain('scale');
+  });
+
+  it('writes the generated PNG to the image clipboard', async () => {
+    class ClipboardItemMock {
+      constructor(readonly data: Record<string, Blob | Promise<Blob>>) {}
+    }
+
+    const write = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { write } });
+    vi.stubGlobal('ClipboardItem', ClipboardItemMock);
+    const pngBlob = Promise.resolve(new Blob(['png'], { type: 'image/png' }));
+
+    await copyPlanPngToClipboard(pngBlob);
+
+    expect(write).toHaveBeenCalledWith([expect.any(ClipboardItemMock)]);
   });
 
   it('uses 2x detail for normal plans and caps oversized canvases', () => {

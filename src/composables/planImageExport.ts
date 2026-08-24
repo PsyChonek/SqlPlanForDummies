@@ -19,6 +19,21 @@ interface PlanImageDocument {
   layout: PlanImageLayout;
 }
 
+export type SqlHighlightKind =
+  | 'plain'
+  | 'keyword'
+  | 'string'
+  | 'number'
+  | 'comment'
+  | 'identifier'
+  | 'function'
+  | 'operator';
+
+export interface SqlHighlightToken {
+  text: string;
+  kind: SqlHighlightKind;
+}
+
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
 const GRAPH_PADDING = 64;
 const QUERY_PANEL_GAP = 24;
@@ -31,6 +46,44 @@ const MIN_IMAGE_WIDTH = 1200;
 const TARGET_RASTER_SCALE = 2;
 const MAX_RASTER_DIMENSION = 16384;
 const MAX_RASTER_PIXELS = 100_000_000;
+
+const SQL_KEYWORDS = new Set([
+  'ADD', 'ALL', 'ALTER', 'AND', 'ANY', 'AS', 'ASC', 'AUTHORIZATION', 'BACKUP',
+  'BEGIN', 'BETWEEN', 'BREAK', 'BROWSE', 'BULK', 'BY', 'CASCADE', 'CASE', 'CHECK',
+  'CHECKPOINT', 'CLOSE', 'CLUSTERED', 'COALESCE', 'COLLATE', 'COLUMN', 'COMMIT',
+  'COMPUTE', 'CONSTRAINT', 'CONTAINS', 'CONTAINSTABLE', 'CONTINUE', 'CONVERT',
+  'CREATE', 'CROSS', 'CURRENT', 'CURRENT_DATE', 'CURRENT_TIME', 'CURRENT_TIMESTAMP',
+  'CURRENT_USER', 'CURSOR', 'DATABASE', 'DBCC', 'DEALLOCATE', 'DECLARE', 'DEFAULT',
+  'DELETE', 'DENY', 'DESC', 'DISK', 'DISTINCT', 'DISTRIBUTED', 'DOUBLE', 'DROP',
+  'DUMP', 'ELSE', 'END', 'ERRLVL', 'ESCAPE', 'EXCEPT', 'EXEC', 'EXECUTE', 'EXISTS',
+  'EXIT', 'EXTERNAL', 'FETCH', 'FILE', 'FILLFACTOR', 'FOLLOWING', 'FOR', 'FOREIGN',
+  'FREETEXT', 'FREETEXTTABLE', 'FROM', 'FULL', 'FUNCTION', 'GOTO', 'GRANT', 'GROUP',
+  'HAVING', 'HOLDLOCK', 'IDENTITY', 'IDENTITY_INSERT', 'IDENTITYCOL', 'IF', 'IN',
+  'INDEX', 'INNER', 'INSERT', 'INTERSECT', 'INTO', 'IS', 'JOIN', 'KEY', 'KILL',
+  'LEFT', 'LIKE', 'LINENO', 'LOAD', 'MERGE', 'NATIONAL', 'NOCHECK', 'NONCLUSTERED',
+  'NOT', 'NULL', 'NULLIF', 'OF', 'OFF', 'OFFSETS', 'ON', 'OPEN', 'OPENDATASOURCE',
+  'OPENQUERY', 'OPENROWSET', 'OPENXML', 'OPTION', 'OR', 'ORDER', 'OUTER', 'OUTPUT',
+  'OVER', 'PERCENT', 'PIVOT', 'PLAN', 'PRECISION', 'PRECEDING', 'PRIMARY', 'PRINT',
+  'PROC', 'PROCEDURE', 'PUBLIC', 'RAISERROR', 'RANGE', 'READ', 'READTEXT',
+  'RECONFIGURE', 'REFERENCES', 'REPLICATION', 'RESTORE', 'RESTRICT', 'RETURN',
+  'REVERT', 'REVOKE', 'RIGHT', 'ROLLBACK', 'ROW', 'ROWS', 'RULE', 'SAVE', 'SCHEMA',
+  'SELECT', 'SESSION_USER', 'SET', 'SETUSER', 'SHUTDOWN', 'SOME', 'STATISTICS',
+  'SYSTEM_USER', 'TABLE', 'TABLESAMPLE', 'TEXTSIZE', 'THEN', 'THROW', 'TO', 'TOP',
+  'TRANSACTION', 'TRIGGER', 'TRUNCATE', 'TRY_CONVERT', 'TSEQUAL', 'UNION', 'UNIQUE',
+  'UNPIVOT', 'UPDATE', 'UPDATETEXT', 'USE', 'USER', 'VALUES', 'VARYING', 'VIEW',
+  'WAITFOR', 'WHEN', 'WHERE', 'WHILE', 'WITH', 'WITHIN', 'WRITETEXT',
+]);
+
+const SQL_HIGHLIGHT_COLORS: Record<SqlHighlightKind, string> = {
+  plain: '#cbd5e1',
+  keyword: '#60a5fa',
+  string: '#86efac',
+  number: '#fbbf24',
+  comment: '#64748b',
+  identifier: '#67e8f9',
+  function: '#c4b5fd',
+  operator: '#f472b6',
+};
 
 const createSvgElement = <K extends keyof SVGElementTagNameMap>(
   name: K,
@@ -62,6 +115,158 @@ export const wrapQueryForImage = (query: string, maxCharacters: number): string[
   }
 
   return lines;
+};
+
+const appendHighlightToken = (
+  tokens: SqlHighlightToken[],
+  text: string,
+  kind: SqlHighlightKind,
+): void => {
+  if (!text) return;
+  const previous = tokens[tokens.length - 1];
+  if (previous?.kind === kind) previous.text += text;
+  else tokens.push({ text, kind });
+};
+
+export const highlightSqlForImage = (lines: string[]): SqlHighlightToken[][] => {
+  let inBlockComment = false;
+  let inString = false;
+
+  return lines.map(line => {
+    const tokens: SqlHighlightToken[] = [];
+    let index = 0;
+
+    while (index < line.length) {
+      if (inBlockComment) {
+        const end = line.indexOf('*/', index);
+        if (end === -1) {
+          appendHighlightToken(tokens, line.slice(index), 'comment');
+          index = line.length;
+          continue;
+        }
+        appendHighlightToken(tokens, line.slice(index, end + 2), 'comment');
+        index = end + 2;
+        inBlockComment = false;
+        continue;
+      }
+
+      if (inString) {
+        let end = index;
+        while (end < line.length) {
+          if (line[end] !== '\'') {
+            end += 1;
+            continue;
+          }
+          if (line[end + 1] === '\'') {
+            end += 2;
+            continue;
+          }
+          end += 1;
+          inString = false;
+          break;
+        }
+        appendHighlightToken(tokens, line.slice(index, end), 'string');
+        index = end;
+        continue;
+      }
+
+      if (line.startsWith('--', index)) {
+        appendHighlightToken(tokens, line.slice(index), 'comment');
+        break;
+      }
+
+      if (line.startsWith('/*', index)) {
+        const end = line.indexOf('*/', index + 2);
+        if (end === -1) {
+          appendHighlightToken(tokens, line.slice(index), 'comment');
+          inBlockComment = true;
+          break;
+        }
+        appendHighlightToken(tokens, line.slice(index, end + 2), 'comment');
+        index = end + 2;
+        continue;
+      }
+
+      const character = line[index];
+      const hasUnicodeStringPrefix = (character === 'N' || character === 'n') && line[index + 1] === '\'';
+      if (character === '\'' || hasUnicodeStringPrefix) {
+        let end = index + (hasUnicodeStringPrefix ? 2 : 1);
+        let closed = false;
+        while (end < line.length) {
+          if (line[end] !== '\'') {
+            end += 1;
+            continue;
+          }
+          if (line[end + 1] === '\'') {
+            end += 2;
+            continue;
+          }
+          end += 1;
+          closed = true;
+          break;
+        }
+        appendHighlightToken(tokens, line.slice(index, end), 'string');
+        inString = !closed;
+        index = end;
+        continue;
+      }
+
+      if (character === '[' || character === '"') {
+        const closingCharacter = character === '[' ? ']' : '"';
+        let end = index + 1;
+        while (end < line.length) {
+          if (line[end] !== closingCharacter) {
+            end += 1;
+            continue;
+          }
+          if (line[end + 1] === closingCharacter) {
+            end += 2;
+            continue;
+          }
+          end += 1;
+          break;
+        }
+        appendHighlightToken(tokens, line.slice(index, end), 'identifier');
+        index = end;
+        continue;
+      }
+
+      if (/\d/.test(character)) {
+        const match = line.slice(index).match(/^(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e[+-]?\d+)?)/i);
+        const value = match?.[0] ?? character;
+        appendHighlightToken(tokens, value, 'number');
+        index += value.length;
+        continue;
+      }
+
+      if (/[A-Za-z_#@]/.test(character)) {
+        const match = line.slice(index).match(/^[A-Za-z_#@][A-Za-z0-9_$#@]*/);
+        const value = match?.[0] ?? character;
+        const upperValue = value.toUpperCase();
+        const followingCharacter = line.slice(index + value.length).trimStart()[0];
+        let kind: SqlHighlightKind = 'plain';
+        if (SQL_KEYWORDS.has(upperValue)) kind = 'keyword';
+        else if (value.startsWith('@') || value.startsWith('#')) kind = 'identifier';
+        else if (followingCharacter === '(') kind = 'function';
+        appendHighlightToken(tokens, value, kind);
+        index += value.length;
+        continue;
+      }
+
+      if (/[+\-*/%=<>!|&^~]/.test(character)) {
+        const match = line.slice(index).match(/^(?:<>|!=|<=|>=|!<|!>|\+=|-=|\*=|\/=|%=|&=|\^=|\|=|::|[+\-*/%=<>!|&^~])/);
+        const value = match?.[0] ?? character;
+        appendHighlightToken(tokens, value, 'operator');
+        index += value.length;
+        continue;
+      }
+
+      appendHighlightToken(tokens, character, 'plain');
+      index += 1;
+    }
+
+    return tokens;
+  });
 };
 
 export const calculatePlanImageLayout = (
@@ -159,12 +364,18 @@ export const createPlanImageDocument = (
   queryText.setAttribute('font-size', String(QUERY_FONT_SIZE));
   queryText.setAttributeNS('http://www.w3.org/XML/1998/namespace', 'xml:space', 'preserve');
 
-  layout.queryLines.forEach((line, index) => {
-    const tspan = createSvgElement('tspan');
-    tspan.setAttribute('x', String(queryX));
-    tspan.setAttribute('dy', index === 0 ? '0' : String(QUERY_LINE_HEIGHT));
-    tspan.textContent = line || ' ';
-    queryText.appendChild(tspan);
+  highlightSqlForImage(layout.queryLines).forEach((tokens, lineIndex) => {
+    const lineTokens = tokens.length > 0 ? tokens : [{ text: ' ', kind: 'plain' as const }];
+    lineTokens.forEach((token, tokenIndex) => {
+      const tspan = createSvgElement('tspan');
+      if (tokenIndex === 0) {
+        tspan.setAttribute('x', String(queryX));
+        tspan.setAttribute('dy', lineIndex === 0 ? '0' : String(QUERY_LINE_HEIGHT));
+      }
+      tspan.setAttribute('fill', SQL_HIGHLIGHT_COLORS[token.kind]);
+      tspan.textContent = token.text;
+      queryText.appendChild(tspan);
+    });
   });
   svg.appendChild(queryText);
 
@@ -185,24 +396,11 @@ const canvasToBlob = (canvas: HTMLCanvasElement): Promise<Blob> => new Promise((
   }, 'image/png');
 });
 
-const downloadBlob = (blob: Blob, filename: string): void => {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  link.style.display = 'none';
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
-};
-
-export const exportPlanAsHighDetailPng = async (
+export const renderPlanAsHighDetailPng = async (
   graphGroup: SVGGElement,
   graphBounds: PlanGraphBounds,
   query: string,
-  filename: string,
-): Promise<void> => {
+): Promise<Blob> => {
   const { svg, layout } = createPlanImageDocument(graphGroup, graphBounds, query);
   const serializedSvg = new XMLSerializer().serializeToString(svg);
   const svgBlob = new Blob([serializedSvg], { type: 'image/svg+xml;charset=utf-8' });
@@ -222,8 +420,18 @@ export const exportPlanAsHighDetailPng = async (
     context.scale(scale, scale);
     context.drawImage(image, 0, 0, layout.width, layout.height);
 
-    downloadBlob(await canvasToBlob(canvas), filename);
+    return await canvasToBlob(canvas);
   } finally {
     URL.revokeObjectURL(svgUrl);
   }
+};
+
+export const copyPlanPngToClipboard = async (pngBlob: Promise<Blob>): Promise<void> => {
+  if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+    throw new Error('Image clipboard access is not supported by this system.');
+  }
+
+  await navigator.clipboard.write([
+    new ClipboardItem({ 'image/png': pngBlob }),
+  ]);
 };

@@ -4,7 +4,7 @@ import * as d3 from 'd3';
 import { usePlanState } from '../composables/planState';
 import type { RelOp } from '../types/sqlplan';
 import { getCostSeverity, getCostColor, formatTime, formatRows } from '../types/sqlplan';
-import { exportPlanAsHighDetailPng } from '../composables/planImageExport';
+import { copyPlanPngToClipboard, renderPlanAsHighDetailPng } from '../composables/planImageExport';
 
 const props = withDefaults(defineProps<{ showHeader?: boolean }>(), { showHeader: true });
 
@@ -29,18 +29,18 @@ const surfaceHeight = ref(800);
 let currentZoom: d3.ZoomBehavior<SVGSVGElement, unknown> | null = null;
 let currentSvg: d3.Selection<SVGSVGElement, unknown, null, undefined> | null = null;
 let currentContentGroup: d3.Selection<SVGGElement, unknown, null, undefined> | null = null;
-const exportInProgress = ref(false);
-const exportStatus = ref('');
-const exportFailed = ref(false);
-let exportStatusTimer: ReturnType<typeof setTimeout> | null = null;
+const imageCopyInProgress = ref(false);
+const imageCopyStatus = ref('');
+const imageCopyFailed = ref(false);
+let imageCopyStatusTimer: ReturnType<typeof setTimeout> | null = null;
 
-const setExportStatus = (message: string, failed = false) => {
-  exportStatus.value = message;
-  exportFailed.value = failed;
-  if (exportStatusTimer) clearTimeout(exportStatusTimer);
-  exportStatusTimer = setTimeout(() => {
-    exportStatus.value = '';
-    exportStatusTimer = null;
+const setImageCopyStatus = (message: string, failed = false) => {
+  imageCopyStatus.value = message;
+  imageCopyFailed.value = failed;
+  if (imageCopyStatusTimer) clearTimeout(imageCopyStatusTimer);
+  imageCopyStatusTimer = setTimeout(() => {
+    imageCopyStatus.value = '';
+    imageCopyStatusTimer = null;
   }, 4000);
 };
 
@@ -60,35 +60,34 @@ const getExportGraphBounds = (graphGroup: SVGGElement) => {
   return { x: left, y: top, width: right - left, height: bottom - top };
 };
 
-const exportHighDetailImage = async () => {
+const copyHighDetailImage = async () => {
   const statement = state.selectedStatement;
   const graphGroup = currentContentGroup?.node();
-  if (!statement || !graphGroup || exportInProgress.value) return;
+  if (!statement || !graphGroup || imageCopyInProgress.value) return;
 
   const bounds = getExportGraphBounds(graphGroup);
   if (bounds.width <= 0 || bounds.height <= 0) {
-    setExportStatus('The plan image is not ready yet.', true);
+    setImageCopyStatus('The plan image is not ready yet.', true);
     return;
   }
 
-  exportInProgress.value = true;
-  exportStatus.value = 'Creating high-detail image...';
-  exportFailed.value = false;
+  imageCopyInProgress.value = true;
+  imageCopyStatus.value = 'Copying high-detail image...';
+  imageCopyFailed.value = false;
 
   try {
-    const statementId = String(statement.statementId).replace(/[^a-zA-Z0-9_-]/g, '-');
-    await exportPlanAsHighDetailPng(
+    const pngBlob = renderPlanAsHighDetailPng(
       graphGroup,
       bounds,
       statement.statementText,
-      `execution-plan-statement-${statementId}.png`,
     );
-    setExportStatus('High-detail plan image downloaded.');
+    await copyPlanPngToClipboard(pngBlob);
+    setImageCopyStatus('High-detail plan image copied to clipboard.');
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Could not export the plan image.';
-    setExportStatus(message, true);
+    const message = error instanceof Error ? error.message : 'Could not copy the plan image.';
+    setImageCopyStatus(message, true);
   } finally {
-    exportInProgress.value = false;
+    imageCopyInProgress.value = false;
   }
 };
 
@@ -941,7 +940,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeyDown);
-  if (exportStatusTimer) clearTimeout(exportStatusTimer);
+  if (imageCopyStatusTimer) clearTimeout(imageCopyStatusTimer);
 });
 </script>
 
@@ -982,12 +981,12 @@ onUnmounted(() => {
     <div v-if="state.selectedStatement" class="absolute bottom-6 right-6 z-50 flex flex-col gap-2">
       <button
         class="w-10 h-10 bg-blue-600 hover:bg-blue-500 rounded-lg flex items-center justify-center text-white transition-colors shadow-lg border border-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 disabled:cursor-wait disabled:opacity-60"
-        title="Export full plan and query as high-detail PNG"
-        aria-label="Export full plan and query as high-detail PNG"
-        :disabled="exportInProgress"
-        @click="exportHighDetailImage"
+        title="Copy full plan and highlighted query as image"
+        aria-label="Copy full plan and highlighted query as image"
+        :disabled="imageCopyInProgress"
+        @click="copyHighDetailImage"
       >
-        <i :class="exportInProgress ? 'fa-solid fa-spinner fa-spin text-sm' : 'fa-solid fa-file-image text-sm'"></i>
+        <i :class="imageCopyInProgress ? 'fa-solid fa-spinner fa-spin text-sm' : 'fa-solid fa-copy text-sm'"></i>
       </button>
       <button 
         class="w-10 h-10 bg-slate-700 hover:bg-slate-600 rounded-lg flex items-center justify-center text-slate-300 transition-colors shadow-lg border border-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
@@ -1016,13 +1015,13 @@ onUnmounted(() => {
     </div>
 
     <div
-      v-if="exportStatus"
+      v-if="imageCopyStatus"
       class="absolute bottom-6 right-20 z-50 max-w-xs rounded-lg border bg-slate-900 px-3 py-2 text-xs shadow-xl"
-      :class="exportFailed ? 'border-red-500/60 text-red-300' : 'border-slate-600 text-slate-200'"
+      :class="imageCopyFailed ? 'border-red-500/60 text-red-300' : 'border-slate-600 text-slate-200'"
       role="status"
       aria-live="polite"
     >
-      {{ exportStatus }}
+      {{ imageCopyStatus }}
     </div>
   </div>
 </template>
