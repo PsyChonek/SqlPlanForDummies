@@ -188,9 +188,9 @@ const handleComparisonFile = async (event: Event) => {
       <!-- Main: Tabbed panel -->
       <main class="overflow-hidden flex flex-col bg-slate-800 rounded-2xl shadow-xl flex-1 min-w-0">
         <!-- Tab bar -->
-        <div class="flex items-center bg-slate-700 border-b border-slate-600 rounded-t-2xl shrink-0">
+        <div class="flex items-center overflow-x-auto bg-slate-700 border-b border-slate-600 rounded-t-2xl shrink-0">
           <button
-            class="flex items-center gap-2 px-4 py-3 text-sm font-semibold transition-colors border-b-2"
+            class="flex shrink-0 items-center gap-2 whitespace-nowrap px-4 py-3 text-sm font-semibold transition-colors border-b-2"
             :class="activeMainTab === 'execution'
               ? 'border-blue-400 text-white'
               : 'border-transparent text-slate-400 hover:text-slate-200'"
@@ -203,7 +203,7 @@ const handleComparisonFile = async (event: Event) => {
             </span>
           </button>
           <button
-            class="flex items-center gap-2 px-4 py-3 text-sm font-semibold transition-colors border-b-2"
+            class="flex shrink-0 items-center gap-2 whitespace-nowrap px-4 py-3 text-sm font-semibold transition-colors border-b-2"
             :class="activeMainTab === 'analysis'
               ? 'border-purple-400 text-white'
               : 'border-transparent text-slate-400 hover:text-slate-200'"
@@ -219,7 +219,7 @@ const handleComparisonFile = async (event: Event) => {
             </span>
           </button>
           <button
-            class="flex items-center gap-2 px-4 py-3 text-sm font-semibold transition-colors border-b-2"
+            class="flex shrink-0 items-center gap-2 whitespace-nowrap px-4 py-3 text-sm font-semibold transition-colors border-b-2"
             :class="activeMainTab === 'query'
               ? 'border-emerald-400 text-white'
               : 'border-transparent text-slate-400 hover:text-slate-200'"
@@ -229,7 +229,7 @@ const handleComparisonFile = async (event: Event) => {
             Query
           </button>
           <button
-            class="flex items-center gap-2 px-4 py-3 text-sm font-semibold transition-colors border-b-2"
+            class="flex shrink-0 items-center gap-2 whitespace-nowrap px-4 py-3 text-sm font-semibold transition-colors border-b-2"
             :class="activeMainTab === 'xml'
               ? 'border-amber-400 text-white'
               : 'border-transparent text-slate-400 hover:text-slate-200'"
@@ -239,7 +239,7 @@ const handleComparisonFile = async (event: Event) => {
             XML
           </button>
           <button
-            class="flex items-center gap-2 px-4 py-3 text-sm font-semibold transition-colors border-b-2"
+            class="flex shrink-0 items-center gap-2 whitespace-nowrap px-4 py-3 text-sm font-semibold transition-colors border-b-2"
             :class="activeMainTab === 'overview'
               ? 'border-cyan-400 text-white'
               : 'border-transparent text-slate-400 hover:text-slate-200'"
@@ -248,7 +248,7 @@ const handleComparisonFile = async (event: Event) => {
             <i class="fa-solid fa-clipboard-list text-cyan-400"></i>
             Plan Overview
           </button>
-          <div class="ml-auto px-3">
+          <div class="ml-auto shrink-0 px-3">
             <input
               ref="comparisonFileInput"
               type="file"
