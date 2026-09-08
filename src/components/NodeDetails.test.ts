@@ -1,6 +1,11 @@
 import { mount } from '@vue/test-utils';
 import NodeDetails from './NodeDetails.vue';
 import { usePlanState } from '../composables/planState';
+const { readFileSync } = await vi.importActual<{
+  readFileSync: (path: string, encoding: string) => string;
+}>('node:fs');
+
+const companyXml = readFileSync('examples/company.sqlplan', 'utf16le');
 
 const simpleXml = `<?xml version="1.0" encoding="utf-16"?>
 <ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.5" Build="17.0">
@@ -200,5 +205,90 @@ describe('NodeDetails', () => {
     const wrapper = mount(NodeDetails);
 
     expect(wrapper.text()).not.toContain('Partitioned Table Access');
+  });
+
+  describe('copy for AI', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    });
+
+    it('copies every descendant in the company plan with one query and each node own properties', async () => {
+      planState.loadPlan(companyXml);
+      expect(planState.state.error).toBeNull();
+      const statement = planState.statements.value.find(statement =>
+        statement.queryPlan.relOp.children.some(child => child.children.length > 0)
+      );
+      expect(statement).toBeDefined();
+      planState.selectStatement(statement!);
+      const root = planState.state.selectedStatement!.queryPlan.relOp;
+      planState.selectNode(root);
+      const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
+      const wrapper = mount(NodeDetails);
+
+      await wrapper.get('button[title^="Copy the selected node"]').trigger('click');
+
+      expect(writeText).toHaveBeenCalledTimes(1);
+      const text = writeText.mock.calls[0][0];
+      expect(text).toContain('Analyze this SQL Server execution plan subtree');
+      expect(text.match(/^## Query$/gm)).toHaveLength(1);
+      expect(text.match(/^### .* \(Node \d+\)$/gm)).toHaveLength(planState.allNodes.value.length - 1);
+      expect(planState.allNodes.value.some(node => node.children.some(child => child.children.length > 0))).toBe(true);
+      for (const parent of planState.allNodes.value) {
+        for (const child of parent.children) {
+          const section = text.split(`### ${child.physicalOp} (Node ${child.nodeId})\n`)[1].split('\n### ')[0];
+          expect(section).toContain(`- **Parent Node:** ${parent.nodeId}`);
+          expect(section).toContain(`- **estimateRows:** ${child.estimateRows}`);
+          if (child.runtimeInfo) {
+            expect(section).toContain(`- **runtimeInfo.actualRows:** ${child.runtimeInfo.actualRows}`);
+          }
+        }
+      }
+      expect(wrapper.get('button[title^="Copy the selected node"]').text()).toBe('Copied!');
+      expect(planState.state.selectedNode?.nodeId).toBe(root.nodeId);
+      wrapper.unmount();
+    });
+
+    it('copies only the selected branch and ignores the property search filter', async () => {
+      planState.loadPlan(nestedXml);
+      const root = planState.state.selectedStatement!.queryPlan.relOp;
+      const branch = root.children[0];
+      branch.children.push({ ...root.children[1], nodeId: 3, children: [], attributes: { TestProperty: 'grandchild details' } });
+      planState.selectNode(branch);
+      const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
+      const wrapper = mount(NodeDetails);
+      await wrapper.get('input').setValue('no matching properties');
+
+      await wrapper.get('button[title^="Copy the selected node"]').trigger('click');
+
+      const text = writeText.mock.calls[0][0];
+      expect(text).toContain('# Index Seek (Node 1)');
+      expect(text).toContain('Nested Loops (Node 0)');
+      expect(text).toContain('### Index Scan (Node 3)');
+      expect(text).toContain('- **Parent Node:** 1');
+      expect(text).toContain('- **attributes.TestProperty:** grandchild details');
+      expect(text).not.toContain('Index Scan (Node 2)');
+      expect(text).not.toContain('### Nested Loops (Node 0)');
+      wrapper.unmount();
+    });
+
+    it('supports leaf nodes and keeps the original single-node copy available', async () => {
+      planState.loadPlan(simpleXml);
+      planState.selectNode(planState.state.selectedStatement!.queryPlan.relOp);
+      const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
+      const wrapper = mount(NodeDetails);
+
+      await wrapper.get('button[title^="Copy the selected node"]').trigger('click');
+      expect(writeText.mock.calls[0][0]).toContain('The selected node has no child nodes.');
+      await wrapper.get('button[title^="Copy node details"]').trigger('click');
+      expect(writeText.mock.calls[1][0]).toContain('# Table Scan (Node 0)');
+      expect(writeText.mock.calls[1][0]).not.toContain('## Descendant Nodes');
+      wrapper.unmount();
+    });
   });
 });

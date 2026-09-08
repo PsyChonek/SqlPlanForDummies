@@ -277,11 +277,9 @@ const predicates = computed(() => {
 });
 
 // Helper to flatten object for dynamic display
-const formattedProperties = computed(() => {
-  if (!selectedNode.value) return [];
-  
-  const processObject = (obj: any, prefix = ''): { key: string; value: any }[] => {
-    let result: { key: string; value: any }[] = [];
+function formatProperties(node: RelOp): { key: string; value: string }[] {
+  const processObject = (obj: unknown, prefix = ''): { key: string; value: string }[] => {
+    let result: { key: string; value: string }[] = [];
     
     if (!obj || typeof obj !== 'object') return [];
 
@@ -289,7 +287,7 @@ const formattedProperties = computed(() => {
       // Skip internal navigation properties and already displayed specialized structures if redundant
       if (key === 'children' || key === 'parent') return;
       
-      const value = obj[key];
+      const value = (obj as Record<string, unknown>)[key];
       const currentKey = prefix ? `${prefix}.${key}` : key;
       
       if (value === null || value === undefined) {
@@ -318,8 +316,10 @@ const formattedProperties = computed(() => {
     return result;
   };
 
-  return processObject(selectedNode.value);
-});
+  return processObject(node);
+}
+
+const formattedProperties = computed(() => selectedNode.value ? formatProperties(selectedNode.value) : []);
 
 const filteredProperties = computed(() => {
   const term = searchTerm.value.trim().toLowerCase();
@@ -509,6 +509,38 @@ function buildNodeMarkdown(): string {
   return lines.join('\n');
 }
 
+function buildSubtreeMarkdown(): string {
+  const root = selectedNode.value;
+  if (!root) return '';
+
+  const lines = [
+    'Analyze this SQL Server execution plan subtree, including the selected node and all its descendants. Use the query and ancestor context to explain how the operators interact, identify likely bottlenecks, and suggest improvements supported by the supplied metrics. Distinguish estimates from actual runtime data and state when more information is needed.',
+    '',
+    buildNodeMarkdown(),
+    '',
+    '## Descendant Nodes',
+    'Each node below includes all its properties. Parent and child IDs describe the tree within the selected statement.',
+  ];
+
+  const pending = root.children.map(node => ({ node, parentId: root.nodeId })).reverse();
+  while (pending.length > 0) {
+    const { node, parentId } = pending.pop()!;
+    lines.push('', `### ${node.physicalOp} (Node ${node.nodeId})`);
+    lines.push(`- **Parent Node:** ${parentId}`);
+    lines.push(`- **Child Nodes:** ${node.children.length ? node.children.map(child => child.nodeId).join(', ') : 'None'}`);
+    lines.push(`- **Cost Percentage:** ${getNodeCostPercentage(node).toFixed(1)}%`);
+    for (const prop of formatProperties(node)) {
+      lines.push(`- **${prop.key}:** ${prop.value}`);
+    }
+    for (let i = node.children.length - 1; i >= 0; i--) {
+      pending.push({ node: node.children[i], parentId: node.nodeId });
+    }
+  }
+
+  if (root.children.length === 0) lines.push('The selected node has no child nodes.');
+  return lines.join('\n');
+}
+
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
@@ -532,7 +564,7 @@ function highlightText(text: string, term: string): string {
   <div class="h-full flex flex-col bg-slate-800 rounded-2xl shadow-xl overflow-hidden">
     <!-- Header -->
     <div class="px-4 py-3 bg-slate-700 border-b border-slate-600">
-      <h3 class="flex items-center gap-2 text-lg font-bold text-white">
+      <h3 class="flex flex-wrap items-center gap-2 text-lg font-bold text-white">
         <i class="fa-solid fa-info-circle text-cyan-400"></i>
         Node Details
         <button
@@ -544,6 +576,16 @@ function highlightText(text: string, term: string): string {
         >
           <i :class="copied === 'node' ? 'fa-solid fa-check' : 'fa-solid fa-robot'"></i>
           {{ copied === 'node' ? 'Copied!' : 'Copy AI' }}
+        </button>
+        <button
+          v-if="selectedNode"
+          @click="copyText(buildSubtreeMarkdown(), 'subtree')"
+          class="shrink-0 flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
+          :class="copied === 'subtree' ? 'bg-green-600/30 text-green-300' : 'bg-indigo-600/30 text-indigo-300 hover:bg-indigo-600/50 hover:text-indigo-200'"
+          title="Copy the selected node and all descendants, query and plan context with AI analysis instructions"
+        >
+          <i :class="copied === 'subtree' ? 'fa-solid fa-check' : 'fa-solid fa-sitemap'" aria-hidden="true"></i>
+          {{ copied === 'subtree' ? 'Copied!' : 'Copy AI + children' }}
         </button>
       </h3>
     </div>
