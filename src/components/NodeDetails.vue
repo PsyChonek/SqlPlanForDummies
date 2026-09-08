@@ -564,13 +564,14 @@ function highlightText(text: string, term: string): string {
   <div class="h-full flex flex-col bg-slate-800 rounded-2xl shadow-xl overflow-hidden">
     <!-- Header -->
     <div class="px-4 py-3 bg-slate-700 border-b border-slate-600">
-      <h3 class="flex flex-wrap items-center gap-2 text-lg font-bold text-white">
+      <h3 class="flex items-center gap-2 text-lg font-bold text-white">
         <i class="fa-solid fa-info-circle text-cyan-400"></i>
         Node Details
+      </h3>
+      <div v-if="selectedNode" class="mt-2 grid grid-cols-2 gap-2">
         <button
-          v-if="selectedNode"
           @click="copyText(buildNodeMarkdown(), 'node')"
-          class="ml-auto shrink-0 flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors"
+          class="flex min-h-8 items-center justify-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
           :class="copied === 'node' ? 'bg-green-600/30 text-green-300' : 'bg-indigo-600/30 text-indigo-300 hover:bg-indigo-600/50 hover:text-indigo-200'"
           title="Copy node details, query and plan context formatted for LLM analysis"
         >
@@ -578,16 +579,15 @@ function highlightText(text: string, term: string): string {
           {{ copied === 'node' ? 'Copied!' : 'Copy AI' }}
         </button>
         <button
-          v-if="selectedNode"
           @click="copyText(buildSubtreeMarkdown(), 'subtree')"
-          class="shrink-0 flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
+          class="flex min-h-8 items-center justify-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400"
           :class="copied === 'subtree' ? 'bg-green-600/30 text-green-300' : 'bg-indigo-600/30 text-indigo-300 hover:bg-indigo-600/50 hover:text-indigo-200'"
           title="Copy the selected node and all descendants, query and plan context with AI analysis instructions"
         >
           <i :class="copied === 'subtree' ? 'fa-solid fa-check' : 'fa-solid fa-sitemap'" aria-hidden="true"></i>
           {{ copied === 'subtree' ? 'Copied!' : 'Copy AI + children' }}
         </button>
-      </h3>
+      </div>
     </div>
     
     <!-- Empty State -->
