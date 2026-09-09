@@ -188,22 +188,17 @@ jobs:
     runs-on: windows-latest
     environment: release
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Check WinGet token and fork access
-        uses: actions/github-script@v9
+      - name: Sync WinGet fork
+        shell: pwsh
         env:
-          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
-        with:
-          # Let the script report a missing secret before making any API calls.
-          github-token: ${{ secrets.WINGET_TOKEN || github.token }}
-          script: |
-            const checkWingetAccess = require('./scripts/check-winget-access.cjs');
-            try {
-              await checkWingetAccess({ github, token: process.env.WINGET_TOKEN });
-            } catch (error) {
-              core.setFailed(error.message);
-            }
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          # A stale fork can cause Komac's CreateRef permission error.
+          # Fast-forward only; fail if the fork has diverged.
+          gh repo sync PsyChonek/winget-pkgs --source microsoft/winget-pkgs --branch master
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not sync the WinGet fork. Resolve the sync failure before publishing.'
+          }
 
       - name: Publish to WinGet
         uses: vedantmgoyal9/winget-releaser@v2

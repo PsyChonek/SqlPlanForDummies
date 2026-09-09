@@ -4,34 +4,42 @@ This document outlines the strategy for publishing `SqlPlanForDummies` to the Wi
 
 ## Recovering a failed automated submission
 
-The release workflow now publishes through `vedantmgoyal9/winget-releaser@v2`
-in a separate `winget` job using the `release` environment. The migration notes
-below describe the original setup.
+The release workflow publishes through `vedantmgoyal9/winget-releaser@v2` in a
+separate `winget` job using the `release` environment. The migration notes below
+describe the original setup.
 
-If Komac generates the manifests and then reports `does not have the correct
-permissions to execute CreateRef`, the submission token cannot create a branch
-in `PsyChonek/winget-pkgs`. Changing the workflow's `permissions: contents: write`
-does not grant this separate PAT access to the fork.
+Komac can report `does not have the correct permissions to execute CreateRef`
+when the fork is stale, even with a working token. Both the
+[Komac maintainer](https://github.com/russellbanks/Komac/issues/1142#issuecomment-2727009549)
+and the [WinGet Releaser maintainer](https://github.com/vedantmgoyal9/winget-releaser/issues/319#issuecomment-2763105257)
+recommend syncing the fork for this failure.
 
-1. Create or repair a **classic** PAT with `public_repo` scope, owned by an
-   account with write access to `PsyChonek/winget-pkgs`. Fine-grained PATs are
-   [not supported by WinGet Releaser](https://github.com/vedantmgoyal9/winget-releaser#readme).
-2. Keep the credential in the shared Bitwarden Secrets Manager project under
-   `SQLPLANFORDUMMIES__WINGET_TOKEN` and update `WINGET_TOKEN` in GitHub repository
-   **Settings > Environments > release > Environment secrets**. An environment
-   secret overrides a repository secret with the same name, so updating only
-   the repository secret will not replace this job's token.
-3. Confirm `PsyChonek/winget-pkgs` is an active fork of `microsoft/winget-pkgs`.
-4. On the failed Release run, choose **Re-run failed jobs**. For v2.7.1 this is
-   [run 34214238961](https://github.com/PsyChonek/SqlPlanForDummies/actions/runs/34214238961).
-   The build and GitHub Release already succeeded. Retry the WinGet job only;
-   starting a new Release workflow would bump the version again.
+The August 24, 2026 release succeeded with the same action revision and Komac
+2.16.0 as the failed September 8 release. On inspection, the fork's `master`
+still pointed to an August 7 commit and was 13,901 commits behind upstream,
+with no fork-only commits. This matches the documented stale-fork failure.
 
-The read-only access check in the workflow catches missing/expired tokens,
-unsupported scopes, and unavailable or unwritable forks before installing Komac.
-Branch protection or other server policies can still reject a submission.
-Re-running an older run uses its original workflow, but picks up the updated
-environment secret, so the v2.7.1 retry does not need the new check to be pushed.
+To recover v2.7.1, sync the fork and retry only the failed job:
+
+```powershell
+rtk gh repo sync PsyChonek/winget-pkgs --source microsoft/winget-pkgs --branch master
+# Continue only if sync succeeded.
+if ($LASTEXITCODE -eq 0) {
+    rtk gh run rerun 34214238961 --failed --repo PsyChonek/SqlPlanForDummies
+}
+```
+
+Alternatively, use **Sync fork > Update branch** on `PsyChonek/winget-pkgs`, then
+**Re-run failed jobs** on [run 34214238961](https://github.com/PsyChonek/SqlPlanForDummies/actions/runs/34214238961).
+The build and GitHub Release already succeeded. Starting a new Release workflow
+would bump the version again. The original run can be retried after the sync
+without pushing the workflow change.
+
+Future releases sync the fork before invoking Komac. The sync is fast-forward
+only and fails on divergence; do not add `--force`. If GitHub refuses the sync,
+inspect that error before changing token permissions. The job uses `WINGET_TOKEN`
+from the `release` environment, which overrides a repository secret of the same
+name.
 
 ## Phase 1: Initial Submission (Current State)
 **Goal:** Establish the package in the official Microsoft repository.
