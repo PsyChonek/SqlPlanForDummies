@@ -5,7 +5,7 @@ const { readFileSync } = await vi.importActual<{
   readFileSync: (path: string, encoding: string) => string;
 }>('node:fs');
 
-const companyXml = readFileSync('examples/company.sqlplan', 'utf16le');
+const companyXml = readFileSync('public/examples/company.sqlplan', 'utf16le');
 
 const simpleXml = `<?xml version="1.0" encoding="utf-16"?>
 <ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.5" Build="17.0">
