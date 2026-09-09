@@ -188,6 +188,23 @@ jobs:
     runs-on: windows-latest
     environment: release
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Check WinGet token and fork access
+        uses: actions/github-script@v9
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        with:
+          # Let the script report a missing secret before making any API calls.
+          github-token: ${{ secrets.WINGET_TOKEN || github.token }}
+          script: |
+            const checkWingetAccess = require('./scripts/check-winget-access.cjs');
+            try {
+              await checkWingetAccess({ github, token: process.env.WINGET_TOKEN });
+            } catch (error) {
+              core.setFailed(error.message);
+            }
+
       - name: Publish to WinGet
         uses: vedantmgoyal9/winget-releaser@v2
         with:

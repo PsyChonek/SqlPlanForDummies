@@ -2,6 +2,37 @@
 
 This document outlines the strategy for publishing `SqlPlanForDummies` to the Windows Package Manager (WinGet) and the roadmap for fully automating updates.
 
+## Recovering a failed automated submission
+
+The release workflow now publishes through `vedantmgoyal9/winget-releaser@v2`
+in a separate `winget` job using the `release` environment. The migration notes
+below describe the original setup.
+
+If Komac generates the manifests and then reports `does not have the correct
+permissions to execute CreateRef`, the submission token cannot create a branch
+in `PsyChonek/winget-pkgs`. Changing the workflow's `permissions: contents: write`
+does not grant this separate PAT access to the fork.
+
+1. Create or repair a **classic** PAT with `public_repo` scope, owned by an
+   account with write access to `PsyChonek/winget-pkgs`. Fine-grained PATs are
+   [not supported by WinGet Releaser](https://github.com/vedantmgoyal9/winget-releaser#readme).
+2. Keep the credential in the shared Bitwarden Secrets Manager project under
+   `SQLPLANFORDUMMIES__WINGET_TOKEN` and update `WINGET_TOKEN` in GitHub repository
+   **Settings > Environments > release > Environment secrets**. An environment
+   secret overrides a repository secret with the same name, so updating only
+   the repository secret will not replace this job's token.
+3. Confirm `PsyChonek/winget-pkgs` is an active fork of `microsoft/winget-pkgs`.
+4. On the failed Release run, choose **Re-run failed jobs**. For v2.7.1 this is
+   [run 34214238961](https://github.com/PsyChonek/SqlPlanForDummies/actions/runs/34214238961).
+   The build and GitHub Release already succeeded. Retry the WinGet job only;
+   starting a new Release workflow would bump the version again.
+
+The read-only access check in the workflow catches missing/expired tokens,
+unsupported scopes, and unavailable or unwritable forks before installing Komac.
+Branch protection or other server policies can still reject a submission.
+Re-running an older run uses its original workflow, but picks up the updated
+environment secret, so the v2.7.1 retry does not need the new check to be pushed.
+
 ## Phase 1: Initial Submission (Current State)
 **Goal:** Establish the package in the official Microsoft repository.
 

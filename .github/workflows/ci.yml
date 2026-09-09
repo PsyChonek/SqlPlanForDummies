@@ -21,6 +21,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Test WinGet access checks
+        run: node --test scripts/check-winget-access.test.cjs
+
       - name: Run frontend tests
         run: npm run test:run
 
