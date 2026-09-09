@@ -4,6 +4,7 @@ import { useDbConnection } from './composables/useDbConnection';
 import { tauriInvoke } from './composables/tauriApi';
 import { useSelectAllScope } from './composables/useSelectAllScope';
 import ConnectionManager from './components/ConnectionManager.vue';
+import AppUpdate from './components/AppUpdate.vue';
 
 useSelectAllScope();
 
@@ -35,6 +36,7 @@ onMounted(async () => {
         </span>
       </h1>
       <div class="flex items-center gap-3">
+        <AppUpdate v-if="isWindows" />
         <!-- Connection Status (clickable) -->
         <button
           v-if="dbState.connected"

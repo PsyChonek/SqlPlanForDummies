@@ -48,7 +48,7 @@ The app has three top-level tabs: **Plan Viewer**, **SQL Editor**, and **XEL Ana
   - Wait statistics dashboard with D3.js charts
   - Session analysis and problem diagnostics
 
-Everything runs as a **native desktop app**: fast, lightweight, offline-capable, with auto-updates.
+Everything runs as a **native desktop app**: fast, lightweight, offline-capable, with update notifications through WinGet on Windows.
 
 ## Roadmap
 
@@ -73,6 +73,16 @@ winget install PsyChonek.SqlPlanForDummies
 
 **MSI Installer:**
 Download from [Releases](https://github.com/PsyChonek/SqlPlanForDummies/releases)
+
+**Updating on Windows:**
+The app checks WinGet at startup and offers an update when a newer version is available.
+Use **Check for updates** in the header to check manually. Choose **Update with WinGet**
+to start the Windows installer, or **Later** to keep working. Save open queries before
+updating, follow any installer prompts, and restart the app when the update finishes.
+WinGet must be available through Microsoft's App Installer, and the app must be an
+installed copy recognized by WinGet. Updates appear after the new version reaches
+the WinGet catalog. Startup check failures do not interrupt your work; a manual check
+shows any error details.
 
 **Build from Source:**
 

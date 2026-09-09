@@ -1,5 +1,7 @@
 mod db;
 #[cfg(target_os = "windows")]
+mod updates;
+#[cfg(target_os = "windows")]
 mod xel;
 
 use db::connection::AppState;
@@ -41,6 +43,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             get_platform,
+            #[cfg(target_os = "windows")]
+            updates::check_app_update,
+            #[cfg(target_os = "windows")]
+            updates::install_app_update,
+            #[cfg(target_os = "windows")]
+            updates::restart_after_update,
             db::commands::test_connection,
             db::commands::connect_db,
             db::commands::disconnect_db,
