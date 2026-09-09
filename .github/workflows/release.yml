@@ -188,6 +188,8 @@ jobs:
     runs-on: windows-latest
     environment: release
     steps:
+      - uses: actions/checkout@v4
+
       - name: Sync WinGet fork
         shell: pwsh
         env:
@@ -200,11 +202,42 @@ jobs:
             throw 'Could not sync the WinGet fork. Resolve the sync failure before publishing.'
           }
 
-      - name: Publish to WinGet
-        uses: vedantmgoyal9/winget-releaser@v2
-        with:
-          identifier: PsyChonek.SqlPlanForDummies
-          token: ${{ secrets.WINGET_TOKEN }}
-          release-tag: v${{ needs.release.outputs.version }}
-          fork-user: PsyChonek
-          installers-regex: '_(x64|arm64)_en-US\.msi$'
+      - uses: cargo-bins/cargo-binstall@b874e25ea559687bec77e281e9b271aa1367b624
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Install Komac
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: cargo binstall komac --version 2.16.0 -y
+
+      - name: Generate and validate WinGet manifests
+        id: winget-manifests
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/tags/v$env:RELEASE_VERSION" `
+            -Headers @{ Authorization = "Bearer $env:GITHUB_TOKEN" }
+          $urls = @($release.assets | Where-Object { $_.name -match '_(x64|arm64)_en-US\.msi$' } | ForEach-Object { $_.browser_download_url })
+          if ($urls.Count -ne 2) { throw 'Expected x64 and ARM64 MSI release assets.' }
+          $output = Join-Path $env:RUNNER_TEMP "winget-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          komac update PsyChonek.SqlPlanForDummies --version $env:RELEASE_VERSION --urls @urls --output $output --dry-run
+          if ($LASTEXITCODE -ne 0) { throw 'WinGet manifest generation failed.' }
+          $manifestPath = Join-Path $output "manifests/p/PsyChonek/SqlPlanForDummies/$env:RELEASE_VERSION"
+          ./scripts/remove-winget-installer-locale.ps1 -Path (Join-Path $manifestPath 'PsyChonek.SqlPlanForDummies.installer.yaml')
+          winget validate $manifestPath --disable-interactivity
+          if ($LASTEXITCODE -ne 0) { throw 'WinGet manifest validation failed.' }
+          "path=$manifestPath" >> $env:GITHUB_OUTPUT
+
+      - name: Publish validated manifests to WinGet
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          KOMAC_FORK_OWNER: PsyChonek
+          MANIFEST_PATH: ${{ steps.winget-manifests.outputs.path }}
+        run: komac submit $env:MANIFEST_PATH --yes

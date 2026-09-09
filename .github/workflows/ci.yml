@@ -24,6 +24,9 @@ jobs:
       - name: Run frontend tests
         run: npm run test:run
 
+      - name: Test WinGet installer language handling
+        run: node --test scripts/remove-winget-installer-locale.test.cjs
+
   test-rust:
     name: Rust Tests
     runs-on: windows-latest

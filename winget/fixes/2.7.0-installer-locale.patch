@@ -1,0 +1,10 @@
+diff --git a/manifests/p/PsyChonek/SqlPlanForDummies/2.7.0/PsyChonek.SqlPlanForDummies.installer.yaml b/manifests/p/PsyChonek/SqlPlanForDummies/2.7.0/PsyChonek.SqlPlanForDummies.installer.yaml
+index 832b048..c71518b 100644
+--- a/manifests/p/PsyChonek/SqlPlanForDummies/2.7.0/PsyChonek.SqlPlanForDummies.installer.yaml
++++ b/manifests/p/PsyChonek/SqlPlanForDummies/2.7.0/PsyChonek.SqlPlanForDummies.installer.yaml
+@@ -4,5 +4,4 @@
+ PackageIdentifier: PsyChonek.SqlPlanForDummies
+ PackageVersion: 2.7.0
+-InstallerLocale: en-US
+ Platform:
+ - Windows.Desktop
