@@ -232,7 +232,8 @@ jobs:
           $manifestPath = Join-Path $output "manifests/p/PsyChonek/SqlPlanForDummies/$env:RELEASE_VERSION"
           ./scripts/remove-winget-installer-locale.ps1 -Path (Join-Path $manifestPath 'PsyChonek.SqlPlanForDummies.installer.yaml')
           winget validate $manifestPath --disable-interactivity
-          if ($LASTEXITCODE -ne 0) { throw 'WinGet manifest validation failed.' }
+          # 0x8A150028 is APPINSTALLER_CLI_ERROR_MANIFEST_VALIDATION_WARNING: valid, with warnings.
+          if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 0x8A150028) { throw 'WinGet manifest validation failed.' }
           "path=$manifestPath" >> $env:GITHUB_OUTPUT
 
       - name: Publish validated manifests to WinGet
