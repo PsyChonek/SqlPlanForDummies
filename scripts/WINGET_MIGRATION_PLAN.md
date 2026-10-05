@@ -8,32 +8,31 @@ The release workflow publishes to WinGet with Komac in a separate `winget` job
 using the `release` environment. The migration notes below describe the original
 setup.
 
-### Required token
+### Fork sync and token scope
 
 `WINGET_TOKEN` (set in the `release` environment, which overrides a repository
-secret of the same name) must be a **classic** PAT with both scopes:
+secret of the same name) is a classic PAT with `public_repo`. The job fast-forwards
+the `PsyChonek/winget-pkgs` fork before running Komac, because a stale fork makes
+Komac fail with `does not have the correct permissions to execute CreateRef`.
 
-- `public_repo`: push branches to the fork and open PRs on `microsoft/winget-pkgs`.
-- `workflow`: upstream `winget-pkgs` changes its `.github/workflows` files often.
-  Fast-forwarding the fork, and Komac creating a branch from upstream `master`,
-  both write those changes into the fork. GitHub refuses that without the
-  `workflow` scope.
+Upstream `winget-pkgs` changes its own `.github/workflows` files from time to time.
+When that happened since the last sync, GitHub refuses the sync for a token without
+the `workflow` scope ("Upstream commits contain workflow changes, which require the
+`workflow` scope"). This is what failed v2.7.1 (run 34214238961) and v2.7.2
+(run 37295194951). Two ways out:
 
-Without `workflow`, releases fail whenever upstream touched a workflow file since
-the fork was last synced. The sync step reports "Upstream commits contain workflow
-changes, which require the `workflow` scope", and Komac reports
-`does not have the correct permissions to execute CreateRef`. This is why v2.7.1
-(run 34214238961) and v2.7.2 (run 37295194951) failed while earlier releases
-passed. The `Check WinGet token scopes` step now fails fast with a clear message
-if either scope is missing.
+- One-off: sync the fork with your own login and retry the job (below).
+- Permanent: edit the existing classic PAT and tick the `workflow` scope. Editing
+  scopes keeps the token value, so the secret does not change.
 
 ### Retrying a failed winget job
 
 The build and GitHub Release already succeeded, so do not start a new Release
-workflow (it would bump the version again). After fixing the token, re-run only
-the failed job:
+workflow (it would bump the version again). Sync the fork, then re-run only the
+failed job:
 
 ```powershell
+gh repo sync PsyChonek/winget-pkgs --source microsoft/winget-pkgs --branch master
 gh run rerun <run-id> --failed --repo PsyChonek/SqlPlanForDummies
 ```
 

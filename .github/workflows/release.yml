@@ -190,33 +190,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check WinGet token scopes
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
-        run: |
-          # Upstream winget-pkgs changes its workflow files regularly. Syncing the fork, and
-          # Komac creating a branch from upstream master, both write those files into the
-          # fork, which GitHub only allows for tokens with the workflow scope.
-          $response = Invoke-WebRequest -Uri 'https://api.github.com/user' -Headers @{ Authorization = "Bearer $env:GH_TOKEN" }
-          $scopes = @($response.Headers['X-OAuth-Scopes'] -join ',' -split ',\s*' | Where-Object { $_ })
-          $missing = @()
-          if (-not ($scopes -contains 'public_repo' -or $scopes -contains 'repo')) { $missing += 'public_repo' }
-          if ($scopes -notcontains 'workflow') { $missing += 'workflow' }
-          if ($missing) {
-            throw "WINGET_TOKEN must be a classic PAT with the public_repo and workflow scopes. Missing: $($missing -join ', '). Current scopes: $($scopes -join ', ')"
-          }
-
       - name: Sync WinGet fork
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
         run: |
           # A stale fork makes Komac's branch creation fail with a CreateRef permission error.
-          # Fast-forward only; fail if the fork has diverged.
+          # Fast-forward only; fail if the fork has diverged. When upstream changed its own
+          # workflow files since the last sync, GitHub requires the workflow scope to sync.
           gh repo sync PsyChonek/winget-pkgs --source microsoft/winget-pkgs --branch master
           if ($LASTEXITCODE -ne 0) {
-            throw 'Could not sync the WinGet fork. Resolve the sync failure before publishing.'
+            throw "Could not sync the WinGet fork. Run 'gh repo sync PsyChonek/winget-pkgs --source microsoft/winget-pkgs --branch master' locally (or Sync fork in the GitHub UI), then 'gh run rerun $env:GITHUB_RUN_ID --failed'. Adding the workflow scope to WINGET_TOKEN makes this automatic."
           }
 
       - uses: cargo-bins/cargo-binstall@b874e25ea559687bec77e281e9b271aa1367b624
