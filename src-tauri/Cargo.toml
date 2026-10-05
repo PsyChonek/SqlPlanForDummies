@@ -40,9 +40,9 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 hostname = "0.4"
 whoami = "1"
+rfd = "0.15"
 
 # XEL parsing (Windows-only: requires PowerShell + SqlServer module)
 [target.'cfg(target_os = "windows")'.dependencies]
 quick-xml = "0.37"
-rfd = "0.15"
 

@@ -1,4 +1,5 @@
 mod db;
+mod plan_file;
 #[cfg(target_os = "windows")]
 mod updates;
 #[cfg(target_os = "windows")]
@@ -43,6 +44,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             get_platform,
+            plan_file::save_plan_file,
             #[cfg(target_os = "windows")]
             updates::check_app_update,
             #[cfg(target_os = "windows")]
