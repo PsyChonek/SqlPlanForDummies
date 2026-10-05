@@ -190,12 +190,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check WinGet token scopes
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          # Upstream winget-pkgs changes its workflow files regularly. Syncing the fork, and
+          # Komac creating a branch from upstream master, both write those files into the
+          # fork, which GitHub only allows for tokens with the workflow scope.
+          $response = Invoke-WebRequest -Uri 'https://api.github.com/user' -Headers @{ Authorization = "Bearer $env:GH_TOKEN" }
+          $scopes = @($response.Headers['X-OAuth-Scopes'] -join ',' -split ',\s*' | Where-Object { $_ })
+          $missing = @()
+          if (-not ($scopes -contains 'public_repo' -or $scopes -contains 'repo')) { $missing += 'public_repo' }
+          if ($scopes -notcontains 'workflow') { $missing += 'workflow' }
+          if ($missing) {
+            throw "WINGET_TOKEN must be a classic PAT with the public_repo and workflow scopes. Missing: $($missing -join ', '). Current scopes: $($scopes -join ', ')"
+          }
+
       - name: Sync WinGet fork
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
         run: |
-          # A stale fork can cause Komac's CreateRef permission error.
+          # A stale fork makes Komac's branch creation fail with a CreateRef permission error.
           # Fast-forward only; fail if the fork has diverged.
           gh repo sync PsyChonek/winget-pkgs --source microsoft/winget-pkgs --branch master
           if ($LASTEXITCODE -ne 0) {
