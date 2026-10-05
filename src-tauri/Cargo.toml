@@ -1,6 +1,6 @@
 [package]
 name = "sql-plan-for-dummies"
-version = "2.7.3"
+version = "2.7.4"
 description = "SQL Execution Plan Viewer"
 authors = ["you"]
 edition = "2021"
