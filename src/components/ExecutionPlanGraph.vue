@@ -5,7 +5,6 @@ import { usePlanState } from '../composables/planState';
 import type { RelOp } from '../types/sqlplan';
 import { getCostSeverity, getCostColor, formatTime, formatRows } from '../types/sqlplan';
 import { copyPlanPngToClipboard, renderPlanAsHighDetailPng } from '../composables/planImageExport';
-import { savePlanFile } from '../composables/planFileExport';
 
 const props = withDefaults(defineProps<{ showHeader?: boolean }>(), { showHeader: true });
 
@@ -31,17 +30,17 @@ let currentZoom: d3.ZoomBehavior<SVGSVGElement, unknown> | null = null;
 let currentSvg: d3.Selection<SVGSVGElement, unknown, null, undefined> | null = null;
 let currentContentGroup: d3.Selection<SVGGElement, unknown, null, undefined> | null = null;
 const imageCopyInProgress = ref(false);
-const toolbarStatus = ref('');
-const toolbarStatusFailed = ref(false);
-let toolbarStatusTimer: ReturnType<typeof setTimeout> | null = null;
+const imageCopyStatus = ref('');
+const imageCopyFailed = ref(false);
+let imageCopyStatusTimer: ReturnType<typeof setTimeout> | null = null;
 
-const setToolbarStatus = (message: string, failed = false) => {
-  toolbarStatus.value = message;
-  toolbarStatusFailed.value = failed;
-  if (toolbarStatusTimer) clearTimeout(toolbarStatusTimer);
-  toolbarStatusTimer = setTimeout(() => {
-    toolbarStatus.value = '';
-    toolbarStatusTimer = null;
+const setImageCopyStatus = (message: string, failed = false) => {
+  imageCopyStatus.value = message;
+  imageCopyFailed.value = failed;
+  if (imageCopyStatusTimer) clearTimeout(imageCopyStatusTimer);
+  imageCopyStatusTimer = setTimeout(() => {
+    imageCopyStatus.value = '';
+    imageCopyStatusTimer = null;
   }, 4000);
 };
 
@@ -68,13 +67,13 @@ const copyHighDetailImage = async () => {
 
   const bounds = getExportGraphBounds(graphGroup);
   if (bounds.width <= 0 || bounds.height <= 0) {
-    setToolbarStatus('The plan image is not ready yet.', true);
+    setImageCopyStatus('The plan image is not ready yet.', true);
     return;
   }
 
   imageCopyInProgress.value = true;
-  toolbarStatus.value = 'Copying high-detail image...';
-  toolbarStatusFailed.value = false;
+  imageCopyStatus.value = 'Copying high-detail image...';
+  imageCopyFailed.value = false;
 
   try {
     const pngBlob = renderPlanAsHighDetailPng(
@@ -83,29 +82,12 @@ const copyHighDetailImage = async () => {
       statement.statementText,
     );
     await copyPlanPngToClipboard(pngBlob);
-    setToolbarStatus('High-detail plan image copied to clipboard.');
+    setImageCopyStatus('High-detail plan image copied to clipboard.');
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Could not copy the plan image.';
-    setToolbarStatus(message, true);
+    setImageCopyStatus(message, true);
   } finally {
     imageCopyInProgress.value = false;
-  }
-};
-
-const planExportInProgress = ref(false);
-
-const exportPlanFile = async () => {
-  if (!state.rawXml || planExportInProgress.value) return;
-
-  planExportInProgress.value = true;
-  try {
-    const savedPath = await savePlanFile(state.rawXml);
-    if (savedPath) setToolbarStatus(`Plan saved to ${savedPath}`);
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    setToolbarStatus(`Could not export the plan: ${message}`, true);
-  } finally {
-    planExportInProgress.value = false;
   }
 };
 
@@ -958,7 +940,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeyDown);
-  if (toolbarStatusTimer) clearTimeout(toolbarStatusTimer);
+  if (imageCopyStatusTimer) clearTimeout(imageCopyStatusTimer);
 });
 </script>
 
@@ -1006,15 +988,6 @@ onUnmounted(() => {
       >
         <i :class="imageCopyInProgress ? 'fa-solid fa-spinner fa-spin text-sm' : 'fa-solid fa-copy text-sm'"></i>
       </button>
-      <button
-        class="w-10 h-10 bg-slate-700 hover:bg-slate-600 rounded-lg flex items-center justify-center text-slate-300 transition-colors shadow-lg border border-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 disabled:cursor-wait disabled:opacity-60"
-        title="Export plan as .sqlplan file"
-        aria-label="Export plan as .sqlplan file"
-        :disabled="!state.rawXml || planExportInProgress"
-        @click="exportPlanFile"
-      >
-        <i :class="planExportInProgress ? 'fa-solid fa-spinner fa-spin text-sm' : 'fa-solid fa-file-export text-sm'" aria-hidden="true"></i>
-      </button>
       <button 
         class="w-10 h-10 bg-slate-700 hover:bg-slate-600 rounded-lg flex items-center justify-center text-slate-300 transition-colors shadow-lg border border-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
         title="Zoom In (+)"
@@ -1042,13 +1015,13 @@ onUnmounted(() => {
     </div>
 
     <div
-      v-if="toolbarStatus"
+      v-if="imageCopyStatus"
       class="absolute bottom-6 right-20 z-50 max-w-xs rounded-lg border bg-slate-900 px-3 py-2 text-xs shadow-xl"
-      :class="toolbarStatusFailed ? 'border-red-500/60 text-red-300' : 'border-slate-600 text-slate-200'"
+      :class="imageCopyFailed ? 'border-red-500/60 text-red-300' : 'border-slate-600 text-slate-200'"
       role="status"
       aria-live="polite"
     >
-      {{ toolbarStatus }}
+      {{ imageCopyStatus }}
     </div>
   </div>
 </template>

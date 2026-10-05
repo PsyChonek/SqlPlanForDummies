@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { usePlanState } from '../composables/planState';
+import { savePlanFile } from '../composables/planFileExport';
 import { flattenRelOps } from '../composables/sqlPlanParser';
 import { formatTime } from '../types/sqlplan';
 import { getWaitTypeDescription } from '../types/waitTypes';
@@ -134,6 +135,29 @@ const missingIndexRows = computed(() =>
   ).sort((a, b) => b.mi.impact - a.mi.impact)
 );
 
+const exportInProgress = ref(false);
+const exportStatus = ref('');
+const exportFailed = ref(false);
+
+const exportPlanFile = async () => {
+  if (!state.rawXml || exportInProgress.value) return;
+
+  exportInProgress.value = true;
+  exportStatus.value = '';
+  try {
+    const savedPath = await savePlanFile(state.rawXml);
+    if (savedPath) {
+      exportStatus.value = `Saved to ${savedPath}`;
+      exportFailed.value = false;
+    }
+  } catch (error: unknown) {
+    exportStatus.value = `Could not export the plan: ${error instanceof Error ? error.message : String(error)}`;
+    exportFailed.value = true;
+  } finally {
+    exportInProgress.value = false;
+  }
+};
+
 const goToStatement = (stmt: Statement) => {
   selectStatement(stmt);
   emit('statement-selected');
@@ -150,6 +174,30 @@ const goToStatement = (stmt: Statement) => {
     </div>
 
     <template v-else>
+      <!-- Actions -->
+      <div class="flex items-center justify-end gap-3">
+        <span
+          v-if="exportStatus"
+          class="text-xs truncate"
+          :class="exportFailed ? 'text-red-400' : 'text-slate-400'"
+          :title="exportStatus"
+          role="status"
+          aria-live="polite"
+        >
+          {{ exportStatus }}
+        </span>
+        <button
+          type="button"
+          class="flex-shrink-0 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm text-slate-200 border border-slate-600 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 disabled:cursor-wait disabled:opacity-60"
+          title="Save all statements of this plan as a standalone .sqlplan file"
+          :disabled="!state.rawXml || exportInProgress"
+          @click="exportPlanFile"
+        >
+          <i :class="exportInProgress ? 'fa-solid fa-spinner fa-spin' : 'fa-solid fa-file-export'" aria-hidden="true"></i>
+          Export .sqlplan
+        </button>
+      </div>
+
       <!-- Totals -->
       <div class="grid grid-cols-3 xl:grid-cols-6 gap-2">
         <div class="bg-slate-700/50 rounded-lg p-3 text-center">
