@@ -234,6 +234,8 @@ jobs:
           winget validate $manifestPath --disable-interactivity
           # 0x8A150028 is APPINSTALLER_CLI_ERROR_MANIFEST_VALIDATION_WARNING: valid, with warnings.
           if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 0x8A150028) { throw 'WinGet manifest validation failed.' }
+          # Actions appends "exit $LASTEXITCODE" to pwsh steps, so clear the accepted warning code.
+          $global:LASTEXITCODE = 0
           "path=$manifestPath" >> $env:GITHUB_OUTPUT
 
       - name: Publish validated manifests to WinGet
