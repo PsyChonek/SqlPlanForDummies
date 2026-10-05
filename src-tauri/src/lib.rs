@@ -62,6 +62,7 @@ pub fn run() {
             db::commands::save_query_history_entry,
             db::commands::get_plan_history,
             db::commands::save_plan_history_entry,
+            db::commands::open_plan_storage_location,
             #[cfg(target_os = "windows")]
             xel::commands::xel_pick_files,
             #[cfg(target_os = "windows")]

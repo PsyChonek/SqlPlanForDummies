@@ -16,7 +16,7 @@ const hasLockWaits = (stmt: Statement): boolean =>
   stmt.queryPlan.waitStats?.some(w => w.waitType.startsWith('LCK_M_')) ?? false;
 
 const { state, loadPlan, loadComparisonPlan, statements, selectStatement } = usePlanState();
-const { recentPlans, loadHistory } = useQueryHistory();
+const { recentPlans, loadHistory, openPlanStorageLocation } = useQueryHistory();
 
 const loadHistoryPlan = (entry: PlanHistoryEntry) => {
   loadPlan(entry.planXml);
@@ -24,6 +24,14 @@ const loadHistoryPlan = (entry: PlanHistoryEntry) => {
 
 const compareWithPlan = (entry: PlanHistoryEntry) => {
   loadComparisonPlan(entry.planXml);
+};
+
+const openStorageLocation = async () => {
+  try {
+    await openPlanStorageLocation();
+  } catch (err) {
+    setStatus(`Could not open plan storage: ${err instanceof Error ? err.message : String(err)}`, true);
+  }
 };
 
 const formatRelativeTime = (dateStr: string) => {
@@ -256,10 +264,21 @@ const setStatus = (message: string, error = false) => {
 
       <!-- Recent Executions -->
       <div v-if="recentPlans.length > 0" class="mt-6">
-        <h4 class="text-sm font-semibold text-slate-400 mb-2 flex items-center gap-2">
-          <i class="fa-solid fa-clock-rotate-left"></i>
-          Recent Executions ({{ recentPlans.length }})
-        </h4>
+        <div class="flex items-center justify-between mb-2">
+          <h4 class="text-sm font-semibold text-slate-400 flex items-center gap-2">
+            <i class="fa-solid fa-clock-rotate-left"></i>
+            Recent Executions ({{ recentPlans.length }})
+          </h4>
+          <button
+            type="button"
+            class="text-xs px-1.5 py-0.5 rounded text-slate-400 hover:text-white hover:bg-slate-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 transition-colors"
+            title="Open the folder where execution plans are stored"
+            aria-label="Open plan storage location"
+            @click="openStorageLocation"
+          >
+            <i class="fa-solid fa-folder-open mr-1" aria-hidden="true"></i> Open folder
+          </button>
+        </div>
 
         <div class="space-y-2">
           <div

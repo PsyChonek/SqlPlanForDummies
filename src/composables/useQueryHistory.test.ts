@@ -245,4 +245,21 @@ describe('useQueryHistory', () => {
       expect(history.recentPlans.value).toHaveLength(0);
     });
   });
+
+  describe('openPlanStorageLocation', () => {
+    it('invokes the backend command', async () => {
+      const { tauriInvoke } = await import('./tauriApi');
+
+      await history.openPlanStorageLocation();
+
+      expect(tauriInvoke).toHaveBeenCalledWith('open_plan_storage_location');
+    });
+
+    it('propagates backend errors to the caller', async () => {
+      const { tauriInvoke } = await import('./tauriApi');
+      vi.mocked(tauriInvoke).mockRejectedValueOnce(new Error('no file manager'));
+
+      await expect(history.openPlanStorageLocation()).rejects.toThrow('no file manager');
+    });
+  });
 });

@@ -76,6 +76,8 @@ export const useQueryHistory = () => {
     }
   };
 
+  const openPlanStorageLocation = () => tauriInvoke<void>('open_plan_storage_location');
+
   const filteredQueries = computed(() => {
     if (!state.searchTerm) return state.queries;
     const term = state.searchTerm.toLowerCase();
@@ -95,6 +97,7 @@ export const useQueryHistory = () => {
     loadHistory,
     addQueryEntry,
     addPlanEntry,
+    openPlanStorageLocation,
     filteredQueries,
     getPlansForQuery,
     recentPlans,

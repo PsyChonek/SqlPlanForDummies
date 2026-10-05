@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
@@ -42,6 +44,11 @@ pub fn save_query_history(app: &AppHandle, history: &[QueryHistoryEntry]) -> Res
     );
     store.save().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Path of the file holding saved query and plan history
+pub fn history_store_path(app: &AppHandle) -> Result<PathBuf, String> {
+    tauri_plugin_store::resolve_store_path(app, HISTORY_STORE).map_err(|e| e.to_string())
 }
 
 pub fn get_plan_history(app: &AppHandle) -> Result<Vec<PlanHistoryEntry>, String> {

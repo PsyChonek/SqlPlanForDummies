@@ -1,4 +1,5 @@
 use chrono::Utc;
+use tauri_plugin_opener::OpenerExt;
 use uuid::Uuid;
 
 use super::connection::{AppState, DbConnection};
@@ -202,4 +203,21 @@ pub async fn save_plan_history_entry(
     }
     store::save_plan_history(&app, &history)?;
     Ok(())
+}
+
+/// Opens the file manager at the saved plan history, selecting the file when it exists
+#[tauri::command]
+pub async fn open_plan_storage_location(app: tauri::AppHandle) -> Result<(), String> {
+    let path = store::history_store_path(&app)?;
+    if path.exists() {
+        return app.opener().reveal_item_in_dir(&path).map_err(|e| e.to_string());
+    }
+
+    let dir = path
+        .parent()
+        .ok_or_else(|| "Plan storage path has no parent directory".to_string())?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    app.opener()
+        .open_path(dir.to_string_lossy(), None::<&str>)
+        .map_err(|e| e.to_string())
 }
