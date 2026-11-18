@@ -1,16 +1,39 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import { usePlanState } from '../composables/planState';
+import { useSqlEditorState } from '../composables/useSqlEditorState';
 import { savePlanFile } from '../composables/planFileExport';
 import { flattenRelOps } from '../composables/sqlPlanParser';
 import { formatTime } from '../types/sqlplan';
 import { getWaitTypeDescription } from '../types/waitTypes';
 import CollapsiblePanel from './CollapsiblePanel.vue';
+import SqlViewer from './SqlViewer.vue';
 import type { Statement, PlanWarnings, WaitStat } from '../types/sqlplan';
 
 const emit = defineEmits<{ (e: 'statement-selected'): void }>();
 
 const { state, statements, selectStatement } = usePlanState();
+const { openInEditor } = useSqlEditorState();
+const router = useRouter();
+
+// The SQL that was run, or the statement texts stored in the plan when it came from a file
+const queryText = computed(() =>
+  state.sourceQuery ?? statements.value.map(s => s.statementText.trim()).filter(Boolean).join('\n\n')
+);
+const queryFromEditor = computed(() => state.sourceQuery !== null);
+
+const queryCopied = ref(false);
+const copyQuery = async () => {
+  await navigator.clipboard.writeText(queryText.value);
+  queryCopied.value = true;
+  setTimeout(() => { queryCopied.value = false; }, 1500);
+};
+
+const openQueryInEditor = () => {
+  openInEditor(queryText.value);
+  router.push('/sql-editor');
+};
 
 const statementElapsedMs = (stmt: Statement): number | null =>
   stmt.queryPlan.queryTimeStats?.elapsedTimeMs
@@ -197,6 +220,41 @@ const goToStatement = (stmt: Statement) => {
           Export .sqlplan
         </button>
       </div>
+
+      <!-- Executed query -->
+      <CollapsiblePanel
+        v-if="queryText"
+        :title="queryFromEditor ? 'Executed Query' : 'Query Text (from plan)'"
+        icon="fa-code"
+        icon-color="text-indigo-400"
+      >
+        <template #header-right>
+          <button
+            type="button"
+            class="text-xs px-2 py-0.5 rounded text-slate-400 hover:text-white hover:bg-slate-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 transition-colors"
+            title="Copy the query to the clipboard"
+            @click="copyQuery"
+          >
+            <i :class="queryCopied ? 'fa-solid fa-check text-green-400' : 'fa-solid fa-copy'" class="mr-1" aria-hidden="true"></i>
+            {{ queryCopied ? 'Copied' : 'Copy' }}
+          </button>
+          <button
+            type="button"
+            class="text-xs px-2 py-0.5 rounded text-slate-400 hover:text-white hover:bg-slate-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 transition-colors"
+            title="Open the query in the SQL Editor to run it again"
+            @click="openQueryInEditor"
+          >
+            <i class="fa-solid fa-pen-to-square mr-1" aria-hidden="true"></i>
+            Open in Editor
+          </button>
+        </template>
+        <p v-if="!queryFromEditor" class="text-xs text-slate-500 mb-2">
+          Statement text stored in the plan. Parameter values and the original batch may differ.
+        </p>
+        <div class="h-40 min-h-16 resize-y overflow-hidden rounded-lg border border-slate-600">
+          <SqlViewer :text="queryText" />
+        </div>
+      </CollapsiblePanel>
 
       <!-- Totals -->
       <div class="grid grid-cols-3 xl:grid-cols-6 gap-2">

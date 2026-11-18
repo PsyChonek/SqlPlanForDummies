@@ -88,6 +88,11 @@ export const useQueryHistory = () => {
     return state.plans.filter((p) => p.sqlPreview === sqlPreview);
   };
 
+  // Full SQL behind a saved plan. Falls back to the stored preview when the query
+  // entry has already rotated out of the history.
+  const getPlanSql = (plan: PlanHistoryEntry): string =>
+    state.queries.find((q) => q.id === plan.queryId)?.sql ?? plan.sqlPreview;
+
   const recentPlans = computed(() => {
     return state.plans.slice(0, 20);
   });
@@ -100,6 +105,7 @@ export const useQueryHistory = () => {
     openPlanStorageLocation,
     filteredQueries,
     getPlansForQuery,
+    getPlanSql,
     recentPlans,
   };
 };

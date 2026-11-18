@@ -12,6 +12,8 @@ export interface SelectedEdge {
 interface AppState {
   plan: ShowPlanXML | null;
   rawXml: string | null;
+  // SQL that produced the plan when it came from the SQL editor, null for files and pasted XML
+  sourceQuery: string | null;
   selectedStatement: Statement | null;
   selectedNode: RelOp | null;
   selectedEdge: SelectedEdge | null;
@@ -27,6 +29,7 @@ interface AppState {
 const state = reactive<AppState>({
   plan: null,
   rawXml: null,
+  sourceQuery: null,
   selectedStatement: null,
   selectedNode: null,
   selectedEdge: null,
@@ -39,8 +42,8 @@ const state = reactive<AppState>({
 });
 
 export const usePlanState = () => {
-  // Load a plan from XML string
-  const loadPlan = (xmlString: string) => {
+  // Load a plan from XML string, optionally with the SQL that was executed to produce it
+  const loadPlan = (xmlString: string, sourceQuery: string | null = null) => {
     state.loading = true;
     state.error = null;
     
@@ -48,6 +51,7 @@ export const usePlanState = () => {
       const plan = parseSqlPlan(xmlString);
       state.plan = plan;
       state.rawXml = xmlString;
+      state.sourceQuery = sourceQuery?.trim() || null;
       
       // Auto-select the first statement if available
       if (plan.batches.length > 0 && plan.batches[0].statements.length > 0) {
@@ -91,6 +95,7 @@ export const usePlanState = () => {
   const clearPlan = () => {
     state.plan = null;
     state.rawXml = null;
+    state.sourceQuery = null;
     state.selectedStatement = null;
     state.selectedNode = null;
     state.error = null;

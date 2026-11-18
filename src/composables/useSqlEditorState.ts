@@ -35,6 +35,18 @@ export const useSqlEditorState = () => {
     activeTabId.value = newTab.id;
   };
 
+  // Put SQL into the editor: reuse the active tab when it is empty, otherwise open a new one
+  const openInEditor = (content: string) => {
+    const active = getTab(activeTabId.value);
+    if (active && !active.content.trim()) {
+      active.content = content;
+      return;
+    }
+    addTab();
+    const created = getTab(activeTabId.value);
+    if (created) created.content = content;
+  };
+
   const closeTab = (tabId: string) => {
     if (tabs.length <= 1) return;
     const idx = tabs.findIndex((t) => t.id === tabId);
@@ -44,5 +56,5 @@ export const useSqlEditorState = () => {
     }
   };
 
-  return { tabs, activeTabId, planType, getTab, setContent, addTab, closeTab };
+  return { tabs, activeTabId, planType, getTab, setContent, addTab, openInEditor, closeTab };
 };

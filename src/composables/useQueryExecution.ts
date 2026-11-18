@@ -15,6 +15,8 @@ export interface QueryResult {
 export interface QueryResultTab {
   id: string;
   query: string;
+  // Full executed SQL, query is a short preview for display
+  sql: string;
   result: QueryResult | null;
   error: string | null;
   timestamp: Date;
@@ -51,6 +53,7 @@ export const useQueryExecution = () => {
       const tab: QueryResultTab = {
         id: crypto.randomUUID(),
         query: sql.substring(0, 200),
+        sql,
         result,
         error: null,
         timestamp: new Date(),
@@ -66,6 +69,7 @@ export const useQueryExecution = () => {
       const tab: QueryResultTab = {
         id: crypto.randomUUID(),
         query: sql.substring(0, 200),
+        sql,
         result: null,
         error: String(e),
         timestamp: new Date(),

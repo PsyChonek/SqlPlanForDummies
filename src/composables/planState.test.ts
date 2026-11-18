@@ -105,6 +105,19 @@ describe('usePlanState', () => {
 
       expect(planState.state.selectedStatement).toBeNull();
     });
+
+    it('stores the executed query when given', () => {
+      planState.loadPlan(simpleXml, '  begin tran exec dbo.Export @Id = 1  ');
+
+      expect(planState.state.sourceQuery).toBe('begin tran exec dbo.Export @Id = 1');
+    });
+
+    it('resets the executed query when a plan is loaded without one', () => {
+      planState.loadPlan(simpleXml, 'SELECT 1');
+      planState.loadPlan(simpleXml);
+
+      expect(planState.state.sourceQuery).toBeNull();
+    });
   });
 
   describe('selectNode', () => {
@@ -166,10 +179,11 @@ describe('usePlanState', () => {
 
   describe('clearPlan', () => {
     it('clears all plan state', () => {
-      planState.loadPlan(simpleXml);
+      planState.loadPlan(simpleXml, 'SELECT * FROM Users');
       planState.clearPlan();
 
       expect(planState.state.plan).toBeNull();
+      expect(planState.state.sourceQuery).toBeNull();
       expect(planState.state.selectedStatement).toBeNull();
       expect(planState.state.selectedNode).toBeNull();
       expect(planState.state.error).toBeNull();

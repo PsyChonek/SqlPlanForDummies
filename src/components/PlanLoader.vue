@@ -16,10 +16,10 @@ const hasLockWaits = (stmt: Statement): boolean =>
   stmt.queryPlan.waitStats?.some(w => w.waitType.startsWith('LCK_M_')) ?? false;
 
 const { state, loadPlan, loadComparisonPlan, statements, selectStatement } = usePlanState();
-const { recentPlans, loadHistory, openPlanStorageLocation } = useQueryHistory();
+const { recentPlans, loadHistory, openPlanStorageLocation, getPlanSql } = useQueryHistory();
 
 const loadHistoryPlan = (entry: PlanHistoryEntry) => {
-  loadPlan(entry.planXml);
+  loadPlan(entry.planXml, getPlanSql(entry));
 };
 
 const compareWithPlan = (entry: PlanHistoryEntry) => {

@@ -217,6 +217,24 @@ describe('useQueryHistory', () => {
     });
   });
 
+  describe('getPlanSql', () => {
+    it('returns the full SQL of the query that produced the plan', async () => {
+      const longSql = `SELECT ${'x, '.repeat(60)}y FROM Users`;
+      const query = makeQueryEntry({ sql: longSql });
+      await history.addQueryEntry(query);
+
+      const plan = makePlanEntry({ queryId: query.id, sqlPreview: longSql.substring(0, 100) });
+
+      expect(history.getPlanSql(plan)).toBe(longSql);
+    });
+
+    it('falls back to the preview when the query is no longer in history', () => {
+      const plan = makePlanEntry({ queryId: 'gone', sqlPreview: 'SELECT * FROM Orders' });
+
+      expect(history.getPlanSql(plan)).toBe('SELECT * FROM Orders');
+    });
+  });
+
   describe('recentPlans', () => {
     it('returns up to 20 most recent plans', async () => {
       for (let i = 0; i < 25; i++) {

@@ -36,8 +36,8 @@ watch(() => state.results.length, () => {
   }
 });
 
-const viewInPlanViewer = (planXml: string) => {
-  loadPlan(planXml);
+const viewInPlanViewer = (planXml: string, sql: string) => {
+  loadPlan(planXml, sql);
   router.push('/plan-viewer');
 };
 
@@ -139,7 +139,7 @@ const formatTime = (date: Date) => {
         <p class="text-slate-400 text-sm">Execution plan captured successfully</p>
         <button
           class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium flex items-center gap-2 transition-colors"
-          @click="viewInPlanViewer(state.results[state.activeResultTab].result!.planXml!)"
+          @click="viewInPlanViewer(state.results[state.activeResultTab].result!.planXml!, state.results[state.activeResultTab].sql)"
         >
           <i class="fa-solid fa-diagram-project"></i>
           View in Plan Viewer
